@@ -1,0 +1,4 @@
+# Doppler configuration for auth-gateway
+setup:
+  project: auth
+  config: dev

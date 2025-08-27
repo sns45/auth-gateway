@@ -1,0 +1,745 @@
+openapi: 3.0.0
+info:
+  title: Authentication Gateway API
+  description: |
+    Central authentication gateway service using Cloudflare Workers, KV storage, and Convex for real-time session management.
+    
+    ## Architecture
+    - **Auth Gateway**: Cloudflare Workers handling OAuth and session management
+    - **Session Storage**: KV storage with Convex fallback for high availability
+    - **Real-time Sync**: Convex provides WebSocket-based session synchronization
+    
+    ## Security Notice
+    This API handles sensitive authentication operations. When developing clients:
+    - Always use HTTPS in production
+    - Session IDs stored in both httpOnly and non-httpOnly cookies
+    - Multi-tab synchronization via Convex WebSocket
+    - KV storage limits handled with automatic Convex fallback
+    - OAuth state parameter for CSRF protection
+    
+  version: 1.0.0
+  contact:
+    name: Platform Team
+    email: support@example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://auth.example.com
+    description: Production server
+  - url: https://auth-staging.example.com
+    description: Staging server
+  - url: http://localhost:8787
+    description: Local development
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Authentication
+    description: Authentication operations
+  - name: OAuth
+    description: OAuth provider operations
+  - name: Session
+    description: Session management
+  - name: User
+    description: User operations
+  - name: Proxy
+    description: API proxy endpoints
+
+paths:
+  /:
+    get:
+      summary: Get API information
+      description: Returns basic information about the API
+      tags:
+        - Health
+      responses:
+        '200':
+          description: API information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiInfo'
+
+  /health:
+    get:
+      summary: Health check
+      description: Returns the health status of the service
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+
+  /api/auth/signin/{provider}:
+    get:
+      summary: Initiate OAuth sign-in
+      description: |
+        Initiates OAuth authentication flow with specified provider.
+        Redirects user to OAuth provider for authentication.
+        Currently only Google OAuth is supported.
+      tags:
+        - OAuth
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          description: OAuth provider name
+          schema:
+            type: string
+            enum: [google]
+        - name: redirect_uri
+          in: query
+          required: false
+          description: Custom redirect URI after OAuth completion
+          schema:
+            type: string
+            format: uri
+      responses:
+        '302':
+          description: Redirect to OAuth provider
+          headers:
+            Location:
+              schema:
+                type: string
+              description: OAuth provider authorization URL
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/auth/callback/{provider}:
+    get:
+      summary: OAuth callback handler
+      description: |
+        Handles OAuth provider callbacks. This endpoint is typically called
+        by the OAuth provider, not directly by clients.
+      tags:
+        - OAuth
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google]
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Authorization code from OAuth provider
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+          description: State parameter for CSRF protection
+      responses:
+        '302':
+          description: Redirect to frontend with authentication result
+          headers:
+            Location:
+              schema:
+                type: string
+              description: Frontend URL with auth status
+            Set-Cookie:
+              schema:
+                type: array
+                items:
+                  type: string
+              description: Session cookies (auth_session and auth_session_id)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/logout:
+    post:
+      summary: Log out user
+      description: |
+        Invalidates the current session in both KV storage and Convex.
+        Clears authentication cookies.
+      tags:
+        - Authentication
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Successfully logged out
+          headers:
+            Set-Cookie:
+              schema:
+                type: array
+                items:
+                  type: string
+              description: Cleared session cookies
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /api/auth/signout:
+    post:
+      summary: Sign out user (alias for logout)
+      description: |
+        Alias endpoint for logout to maintain compatibility.
+        Invalidates the current session and clears authentication.
+      tags:
+        - Authentication
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Successfully signed out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /api/auth/session:
+    get:
+      summary: Get current session
+      description: |
+        Returns information about the current authenticated session.
+        Checks KV storage first, falls back to Convex if needed.
+      tags:
+        - Session
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Session information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  
+  /api/auth/get-session:
+    get:
+      summary: Get session status
+      description: |
+        Returns current session status without requiring authentication.
+        Returns 204 if no valid session exists.
+      tags:
+        - Session
+      responses:
+        '200':
+          description: Active session found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfo'
+        '204':
+          description: No active session
+
+  /api/auth/refresh:
+    post:
+      summary: Refresh access token
+      description: |
+        Refreshes an expired access token using a valid refresh token.
+        Requires either a refresh token in the request body or a valid session cookie.
+      tags:
+        - Authentication
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken:
+                  type: string
+                  description: Refresh token (optional if using cookies)
+      responses:
+        '200':
+          description: New tokens generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/me:
+    get:
+      summary: Get current user
+      description: |
+        Returns the current authenticated user information.
+        Requires valid session.
+      tags:
+        - User
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current user information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  user:
+                    $ref: '#/components/schemas/User'
+                  session:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      expiresAt:
+                        type: string
+                        format: date-time
+                  permissions:
+                    type: array
+                    items:
+                      type: string
+                  session_expires_at:
+                    type: string
+                    format: date-time
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/providers:
+    get:
+      summary: Get available OAuth providers
+      description: Returns list of configured OAuth providers
+      tags:
+        - OAuth
+      responses:
+        '200':
+          description: List of providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  providers:
+                    type: array
+                    items:
+                      type: string
+                      enum: [google]
+
+  /api/proxy/{service}/{path}:
+    get:
+      summary: Proxy GET request
+      description: |
+        Proxies authenticated requests to backend services.
+        Requires valid authentication.
+      tags:
+        - Proxy
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Target service name
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Path within the service
+      responses:
+        '200':
+          description: Proxied response from backend service
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+    post:
+      summary: Proxy POST request
+      description: Proxies authenticated POST requests to backend services
+      tags:
+        - Proxy
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Proxied response
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+    put:
+      summary: Proxy PUT request
+      tags:
+        - Proxy
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Proxied response
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    delete:
+      summary: Proxy DELETE request
+      tags:
+        - Proxy
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Proxied response
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token in Authorization header
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: auth_session
+      description: |
+        HttpOnly session cookie for secure server-side validation.
+        Additionally, auth_session_id cookie is set for JavaScript access.
+
+  schemas:
+    ApiInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "Hono Authentication Gateway"
+        version:
+          type: string
+          example: "1.0.0"
+        environment:
+          type: string
+          enum: [development, staging, production]
+        timestamp:
+          type: string
+          format: date-time
+        endpoints:
+          type: object
+          properties:
+            health:
+              type: string
+              example: "/health"
+            auth:
+              type: string
+              example: "/auth"
+            api:
+              type: string
+              example: "/api/*"
+
+    HealthCheck:
+      type: object
+      required:
+        - status
+        - timestamp
+        - version
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+        uptime:
+          type: number
+          description: Uptime in seconds
+        checks:
+          type: object
+          properties:
+            convex:
+              type: string
+              enum: [healthy, unhealthy]
+              description: Convex backend connection status
+            kv_store:
+              type: string
+              enum: [healthy, unhealthy]
+              description: Cloudflare KV storage status
+            rate_limiter:
+              type: string
+              enum: [healthy, unhealthy]
+              description: Rate limiter status
+        metrics:
+          type: object
+          properties:
+            memory_usage:
+              type: number
+            cpu_usage:
+              type: number
+            active_sessions:
+              type: number
+            requests_per_minute:
+              type: number
+
+    SessionInfo:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        session:
+          type: object
+          properties:
+            id:
+              type: string
+            expiresAt:
+              type: string
+              format: date-time
+        isAuthenticated:
+          type: boolean
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        image:
+          type: string
+          format: uri
+        provider:
+          type: string
+          enum: [google]
+          description: Currently only Google OAuth is supported
+        createdAt:
+          type: string
+          format: date-time
+
+    TokenResponse:
+      type: object
+      required:
+        - accessToken
+        - tokenType
+        - expiresIn
+      properties:
+        accessToken:
+          type: string
+          description: JWT access token
+        refreshToken:
+          type: string
+          description: Refresh token for obtaining new access tokens
+        tokenType:
+          type: string
+          example: "Bearer"
+        expiresIn:
+          type: number
+          description: Token expiration time in seconds
+          example: 3600
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          required:
+            - message
+            - code
+          properties:
+            message:
+              type: string
+              description: Human-readable error message
+            code:
+              type: string
+              description: Error code for client handling
+              enum:
+                - INVALID_REQUEST
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - NOT_FOUND
+                - RATE_LIMITED
+                - INTERNAL_ERROR
+                - BAD_GATEWAY
+                - SERVICE_UNAVAILABLE
+                - OAUTH_ERROR
+                - KV_LIMIT_EXCEEDED
+            details:
+              type: string
+              description: Additional error details
+            request_id:
+              type: string
+              description: Request ID for debugging
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              message: "Invalid request parameters"
+              code: "INVALID_REQUEST"
+              details: "Missing required field: callbackURL"
+
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              message: "Authentication required"
+              code: "UNAUTHORIZED"
+
+    Forbidden:
+      description: Access forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              message: "Access forbidden"
+              code: "FORBIDDEN"
+
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: Request limit per window
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: Remaining requests in window
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Time when rate limit resets (Unix timestamp)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              message: "Rate limit exceeded"
+              code: "RATE_LIMITED"
+              details: "Try again in 60 seconds"
+
+    BadGateway:
+      description: Backend service error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              message: "Backend service error"
+              code: "BAD_GATEWAY"
+              details: "Unable to reach backend service"
+
+security:
+  - bearerAuth: []
+  - cookieAuth: []

@@ -1,0 +1,72 @@
+# Environment files
+.env
+.env.*
+.dev.vars
+
+# Doppler
+.doppler
+
+# Secrets backup
+*.backup.env
+secrets.*.env
+
+# Wrangler state files
+.wrangler/
+config/.wrangler/
+**/.wrangler/
+
+# Node modules
+node_modules/
+
+# Build outputs
+dist/
+build/
+.cache/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# TypeScript cache
+*.tsbuildinfo
+.tscache/
+
+# Test artifacts
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Local development scripts (if they contain secrets)
+test-server.sh
+scripts/test-local-dev.sh
+
+# Tool-specific folders
+.claude-flow/
+.swarm/
+*.db
+
+# CI/CD files
+.gitlab-ci.yml

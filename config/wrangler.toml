@@ -1,0 +1,86 @@
+name = "in8-auth-gateway"
+main = "dist/index.js"
+compatibility_date = "2024-10-21"
+compatibility_flags = ["nodejs_compat"]
+
+# Single KV namespace shared across all environments
+[[kv_namespaces]]
+binding = "AUTH_STORE"
+id = "3557a29a2c894326bd3422bfb9ae4e51"
+preview_id = "8c6d2c8b5d8f4e5486976b98d6765b1a"
+
+# Default variables (used in development)
+[vars]
+NODE_ENV = "development"
+CONVEX_URL = "https://rosy-007.convex.cloud"
+CONVEX_SITE_URL = "https://rosy-007.convex.site"
+ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:8787,https://example.com,https://staging.example.com,https://auth.example.com,https://auth-staging.example.com"
+LOG_LEVEL = "debug"
+GOOGLE_CLIENT_ID = "-.apps.googleusercontent.com"
+OAUTH_BASE_URL = "http://localhost:8787"
+FRONTEND_URL = "http://localhost:5173"
+
+# Single worker with custom domains
+[[routes]]
+pattern = "auth.example.com/*"
+zone_name = "example.com"
+
+[[routes]]
+pattern = "auth-staging.example.com/*"
+zone_name = "example.com"
+
+# Environment-specific variables will be set at runtime
+# NODE_ENV is determined by the request hostname:
+# - auth.example.com -> production (OAUTH_BASE_URL: https://auth.example.com)
+# - auth-staging.example.com -> staging (OAUTH_BASE_URL: https://auth-staging.example.com)
+# - localhost:* -> development (OAUTH_BASE_URL: http://localhost:8787)
+# 
+# NOTE: OAUTH_BASE_URL ensures OAuth callbacks go through the gateway 
+# instead of directly to Convex (which would cause 500 errors)
+
+# Secrets (set via wrangler secret put or Doppler)
+# JWT_SECRET
+# SESSION_SECRET
+# BETTER_AUTH_SECRET
+# CONVEX_DEPLOY_KEY
+# OAUTH_GOOGLE_CLIENT_SECRET
+# OAUTH_GITHUB_CLIENT_SECRET
+# OAUTH_DISCORD_CLIENT_SECRET
+
+# Build step handled separately
+# [build]
+# command = "npm run build"
+
+# Staging environment - uses same worker name, different vars
+[env.staging]
+[[env.staging.kv_namespaces]]
+binding = "AUTH_STORE"
+id = "3557a29a2c894326bd3422bfb9ae4e51"
+preview_id = "8c6d2c8b5d8f4e5486976b98d6765b1a"
+
+[env.staging.vars]
+NODE_ENV = "production"
+OAUTH_BASE_URL = "https://auth-staging.example.com"
+FRONTEND_URL = "https://staging.example.com"
+CONVEX_URL = "https://rosy-007.convex.cloud"
+CONVEX_SITE_URL = "https://rosy-007.convex.site"
+ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:8787,https://example.com,https://staging.example.com,https://auth.example.com,https://auth-staging.example.com"
+LOG_LEVEL = "debug"
+GOOGLE_CLIENT_ID = "-c.apps.googleusercontent.com"
+
+# Production environment - uses same worker name, different vars  
+[env.production]
+[[env.production.kv_namespaces]]
+binding = "AUTH_STORE"
+id = "3557a29a2c894326bd3422bfb9ae4e51"
+preview_id = "8c6d2c8b5d8f4e5486976b98d6765b1a"
+
+[env.production.vars]
+NODE_ENV = "production"
+OAUTH_BASE_URL = "https://auth.example.com"
+FRONTEND_URL = "https://example.com"
+CONVEX_URL = "https://rosy-007.convex.cloud"
+CONVEX_SITE_URL = "https://rosy-007.convex.site"
+ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:8787,https://example.com,https://staging.example.com,https://auth.example.com,https://auth-staging.example.com"
+LOG_LEVEL = "info"
+GOOGLE_CLIENT_ID = "-.apps.googleusercontent.com"

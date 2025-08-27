@@ -5,7 +5,7 @@ A lightweight authentication gateway service built with Hono.js on Cloudflare Wo
 ## Overview
 
 <div align="center">
-  <img src="assets/architecture-diagram.png" alt="Authentication Gateway Architecture" width="600" />
+  <img src="assets/hero.png" alt="Authentication Gateway Architecture" width="600" />
 </div>
 
 

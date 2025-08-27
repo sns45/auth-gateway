@@ -4,12 +4,18 @@ A lightweight authentication gateway service built with Hono.js on Cloudflare Wo
 
 ## Overview
 
+<div align="center">
+  <img src="assets/architecture-diagram.png" alt="Authentication Gateway Architecture" width="600" />
+</div>
+
+
 This auth gateway serves as a central authentication service, handling:
 - Google OAuth authentication
 - Session management with Cloudflare KV storage
 - Secure cookie-based authentication
 - API proxying with authentication headers
 - Real-time session synchronization via Convex
+
 
 ## Tech Stack
 
@@ -72,6 +78,8 @@ auth/
 │   │   ├── crypto.ts        # Encryption utilities
 │   │   └── validation.ts    # Request validation
 │   └── types/               # TypeScript definitions
+├── assets/                  # Static assets and images
+│   └── architecture-diagram.png  # System architecture diagram
 ├── config/
 │   └── wrangler.toml        # Cloudflare Workers config
 ├── scripts/                 # Deployment and utility scripts

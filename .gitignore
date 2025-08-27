@@ -70,3 +70,6 @@ scripts/test-local-dev.sh
 
 # CI/CD files
 .gitlab-ci.yml
+
+# Convex generated files
+convex/_generated/

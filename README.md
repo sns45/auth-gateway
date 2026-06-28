@@ -223,6 +223,7 @@ When KV write limits are exceeded (1,000 writes/day on free tier):
 - Session creation falls back to Convex-only storage
 - Session reads attempt Convex when KV returns null
 - Activity updates continue to Convex for real-time sync
+- Session changes, including logout, propagate live to every open tab
 - No user-facing impact during fallback
 
 ## Security Considerations
@@ -284,10 +285,20 @@ npm run test:websocket:prod
 - Cost-effective for authentication workloads
 
 ### Why Convex for Fallback?
-- Real-time WebSocket support
-- Automatic session synchronization across tabs
-- Reliable backup when KV limits are hit
-- Built-in ReactQuery/hooks for frontend
+
+Convex is a **reactive** database: clients subscribe over WebSockets and are
+pushed updates the moment session data changes. That reactivity, not just its
+role as a backup, is the reason it was chosen:
+
+- **Live multi-tab session sync** — every tab subscribes to its session, so a
+  change propagates instantly. Sign out in one tab and all other open tabs log
+  out on their own, with no refresh and no polling. A plain key-value backup
+  could hold the session just as well, but could not give you this for free.
+- **Real-time WebSocket support** — no client-side polling for session state.
+- **Reliable backup when KV write limits are hit** — keeps the session layer
+  working past the free tier's ~1,000 writes/day cap.
+- **Built-in ReactQuery/hooks for the frontend** — query and subscribe to
+  session state directly.
 
 ### Cookie Strategy
 - Two-cookie approach balances security and functionality

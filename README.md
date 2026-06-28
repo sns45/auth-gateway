@@ -290,14 +290,14 @@ Convex is a **reactive** database: clients subscribe over WebSockets and are
 pushed updates the moment session data changes. That reactivity, not just its
 role as a backup, is the reason it was chosen:
 
-- **Live multi-tab session sync** — every tab subscribes to its session, so a
+- **Live multi-tab session sync**: every tab subscribes to its session, so a
   change propagates instantly. Sign out in one tab and all other open tabs log
   out on their own, with no refresh and no polling. A plain key-value backup
   could hold the session just as well, but could not give you this for free.
-- **Real-time WebSocket support** — no client-side polling for session state.
-- **Reliable backup when KV write limits are hit** — keeps the session layer
+- **Real-time WebSocket support**: no client-side polling for session state.
+- **Reliable backup when KV write limits are hit**: keeps the session layer
   working past the free tier's ~1,000 writes/day cap.
-- **Built-in ReactQuery/hooks for the frontend** — query and subscribe to
+- **Built-in ReactQuery/hooks for the frontend**: query and subscribe to
   session state directly.
 
 ### Cookie Strategy

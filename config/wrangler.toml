@@ -24,7 +24,7 @@ CONVEX_URL = "https://terrific-cormorant-458.convex.cloud"
 CONVEX_SITE_URL = "https://terrific-cormorant-458.convex.site"
 ALLOWED_ORIGINS = "https://in8.sh,https://www.in8.sh,https://auth.in8.sh"
 LOG_LEVEL = "info"
-GOOGLE_CLIENT_ID = "460658086118-bpnsjprapn6ujlk7sdsmvkiboi1gkro2.apps.googleusercontent.com"
+GOOGLE_CLIENT_ID = "428616692025-tmncbvvk4k6lob3q185el3dv88v0i0j8.apps.googleusercontent.com"
 OAUTH_BASE_URL = "https://auth.in8.sh"
 FRONTEND_URL = "https://in8.sh"
 

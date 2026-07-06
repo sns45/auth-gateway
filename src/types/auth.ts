@@ -142,7 +142,13 @@ export interface CloudflareEnv {
   // Session configuration
   SESSION_COOKIE_NAME?: string;
   SESSION_TIMEOUT?: string | number;
-  
+
+  // Cookie domain override (defaults to apex of the request hostname)
+  COOKIE_DOMAIN?: string;
+
+  // Shared secret proving gateway identity to Convex HTTP actions
+  CONVEX_SYNC_SECRET?: string;
+
   // OAuth Base URL for redirects
   OAUTH_BASE_URL?: string;
   

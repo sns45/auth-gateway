@@ -99,16 +99,17 @@ authRoutes.post('/login', authRateLimit, async (c) => {
     };
 
     setCookie(c, c.env.SESSION_COOKIE_NAME || 'auth_session', sessionId, cookieOptions);
-    
+
     // Also set a non-httpOnly cookie for the session ID that JavaScript can read
     const isProdOrStaging = c.env.NODE_ENV === 'production' || c.env.NODE_ENV === 'staging';
-    const cookieDomainStr = isProdOrStaging ? '; Domain=.example.com' : '';
+    const loginCookieDomain = isProdOrStaging ? getCookieDomain(c) : undefined;
+    const cookieDomainStr = loginCookieDomain ? `; Domain=${loginCookieDomain}` : '';
     c.header('Set-Cookie', `auth_session_id=${sessionId}; Path=/; Max-Age=${cookieOptions.maxAge}${cookieDomainStr}; SameSite=${cookieOptions.sameSite}${isProdOrStaging ? '; Secure' : ''}`, { append: true });
 
     // Update last login
     await convexService.updateLastLogin(user.id);
 
-    logger.info(`User logged in`, { 
+    logger.info(`User logged in`, {
       requestId, 
       userId: user.id, 
       email: user.email,
@@ -143,10 +144,18 @@ authRoutes.get('/signin/:provider', async (c) => {
   const provider = c.req.param('provider') as any;
   const baseUrl = getBaseURL(c);
   const redirectUri = c.req.query('redirect_uri') || `${baseUrl}/api/auth/callback/${provider}`;
-  
+
+  // Optional ?redirect=/some/path returns the user to the page that initiated
+  // login. Validated to same-site absolute paths and carried through state.
+  const requestedRedirect = c.req.query('redirect') || '/';
+  const redirectPath =
+    requestedRedirect.length <= 512 && /^\/(?!\/)/.test(requestedRedirect)
+      ? requestedRedirect
+      : '/';
+
   try {
     const oauthService = new OAuthService(c.env);
-    
+
     if (!oauthService.isProviderSupported(provider)) {
       return c.json({
         success: false,
@@ -157,7 +166,7 @@ authRoutes.get('/signin/:provider', async (c) => {
       }, 400);
     }
 
-    const authUrl = oauthService.getAuthorizationUrl(provider, redirectUri);
+    const authUrl = oauthService.getAuthorizationUrl(provider, redirectUri, buildOAuthState(redirectPath));
     if (!authUrl) {
       return c.json({
         success: false,
@@ -291,18 +300,10 @@ authRoutes.get('/callback/:provider', async (c) => {
 
     // Set session cookie with proper domain handling
     const isProduction = c.env.NODE_ENV === 'production';
-    const hostname = new URL(c.req.url).hostname;
-    
-    // Determine cookie domain based on environment
-    let cookieDomain: string | undefined;
-    if (isProduction) {
-      if (hostname.includes('staging')) {
-        cookieDomain = '.example.com'; // Allow cookie on all staging subdomains
-      } else {
-        cookieDomain = '.example.com'; // Allow cookie on all production subdomains
-      }
-    }
-    
+
+    // Apex-scoped cookie domain so sibling subdomains (the app) see the session
+    const cookieDomain = isProduction ? getCookieDomain(c) : undefined;
+
     const cookieOptions = {
       httpOnly: true,
       secure: isProduction,
@@ -313,11 +314,11 @@ authRoutes.get('/callback/:provider', async (c) => {
     };
 
     setCookie(c, c.env.SESSION_COOKIE_NAME || 'auth_session', sessionId, cookieOptions);
-    
+
     // Also set a non-httpOnly cookie for the session ID that JavaScript can read
-    const isProdOrStaging = c.env.NODE_ENV === 'production' || c.env.NODE_ENV === 'staging';
-    const cookieDomainStr = isProdOrStaging ? '; Domain=.example.com' : '';
-    c.header('Set-Cookie', `auth_session_id=${sessionId}; Path=/; Max-Age=${cookieOptions.maxAge}${cookieDomainStr}; SameSite=${cookieOptions.sameSite}${isProdOrStaging ? '; Secure' : ''}`, { append: true });
+    // (used by the frontend's reactive Convex subscription for multi-tab sync)
+    const cookieDomainStr = cookieDomain ? `; Domain=${cookieDomain}` : '';
+    c.header('Set-Cookie', `auth_session_id=${sessionId}; Path=/; Max-Age=${cookieOptions.maxAge}${cookieDomainStr}; SameSite=${cookieOptions.sameSite}${isProduction ? '; Secure' : ''}`, { append: true });
 
     // Update last login
     await convexService.updateLastLogin(user.id);
@@ -329,9 +330,11 @@ authRoutes.get('/callback/:provider', async (c) => {
       email: user.email 
     });
 
-    // Redirect to frontend with success
+    // Redirect back to the page that initiated login (carried through state)
     const frontendUrl = getFrontendURL(c);
-    return c.redirect(`${frontendUrl}?auth=success&provider=${provider}`);
+    const returnPath = parseStateRedirect(c.req.query('state'));
+    const sep = returnPath.includes('?') ? '&' : '?';
+    return c.redirect(`${frontendUrl}${returnPath}${sep}auth=success&provider=${provider}`);
 
   } catch (error) {
     logger.error(`OAuth callback error`, {
@@ -418,14 +421,11 @@ authRoutes.post('/logout', optionalAuth, async (c) => {
 
     // Clear session cookies with explicit Set-Cookie headers
     const isProduction = c.env.NODE_ENV === 'production' || c.env.NODE_ENV === 'staging';
-    const hostname = new URL(c.req.url).hostname;
-    
-    // Determine cookie domain based on environment
-    let cookieDomain = '';
-    if (isProduction) {
-      cookieDomain = '; Domain=.example.com';
-    }
-    
+
+    // Determine cookie domain based on the request hostname (matches set-time domain)
+    const clearDomain = isProduction ? getCookieDomain(c) : undefined;
+    const cookieDomain = clearDomain ? `; Domain=${clearDomain}` : '';
+
     // Clear both cookies by setting them to expire in the past
     c.header('Set-Cookie', `auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${cookieDomain}; HttpOnly; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
     c.header('Set-Cookie', `auth_session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${cookieDomain}; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
@@ -457,14 +457,11 @@ authRoutes.post('/signout', optionalAuth, async (c) => {
 
     // Clear session cookies with explicit Set-Cookie headers
     const isProduction = c.env.NODE_ENV === 'production' || c.env.NODE_ENV === 'staging';
-    const hostname = new URL(c.req.url).hostname;
-    
-    // Determine cookie domain based on environment
-    let cookieDomain = '';
-    if (isProduction) {
-      cookieDomain = '; Domain=.example.com';
-    }
-    
+
+    // Determine cookie domain based on the request hostname (matches set-time domain)
+    const clearDomain = isProduction ? getCookieDomain(c) : undefined;
+    const cookieDomain = clearDomain ? `; Domain=${clearDomain}` : '';
+
     // Clear both cookies by setting them to expire in the past
     c.header('Set-Cookie', `auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${cookieDomain}; HttpOnly; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
     c.header('Set-Cookie', `auth_session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${cookieDomain}; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
@@ -570,48 +567,96 @@ function getClientIP(c: any): string {
 }
 
 function getBaseURL(c: any): string {
-  // Use configured OAuth base URL if available
+  // In deployed environments the request hostname is authoritative, so a
+  // single worker serving several auth hostnames builds correct callbacks.
+  const hostname = new URL(c.req.url).hostname;
+  if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+    return `https://${hostname}`;
+  }
+
+  // Use configured OAuth base URL if available (development)
   if (c.env.OAUTH_BASE_URL) {
     return c.env.OAUTH_BASE_URL;
   }
-  
-  // Fallback to environment-specific base URL
-  const hostname = new URL(c.req.url).hostname;
-  
-  if (hostname === 'auth.example.com') {
-    return 'https://auth.example.com';
-  } else if (hostname === 'auth-staging.example.com') {
-    return 'https://auth-staging.example.com';
-  } else {
-    // For development, use localhost with the appropriate port
-    const protocol = c.env.NODE_ENV === 'production' ? 'https' : 'http';
-    const host = c.req.header('host') || 'localhost:8787';
-    return `${protocol}://${host}`;
-  }
+
+  // For development, use localhost with the appropriate port
+  const protocol = c.env.NODE_ENV === 'production' ? 'https' : 'http';
+  const host = c.req.header('host') || 'localhost:8787';
+  return `${protocol}://${host}`;
 }
 
 function getFrontendURL(c: any): string {
-  // Detect environment based on the request hostname
+  // Derive the app origin from the auth hostname: auth.<apex> -> https://<apex>
   const hostname = new URL(c.req.url).hostname;
-  
-  // Production environments
-  if (hostname === 'auth.example.com') {
-    return 'https://example.com';
-  } else if (hostname === 'auth-staging.example.com') {
-    return 'https://staging.example.com';
+  const match = hostname.match(/^auth(?:-staging)?\.(.+)$/);
+  if (match) {
+    return `https://${match[1]}`;
   }
-  
+
   // Use configured frontend URL if available
   if (c.env.FRONTEND_URL) {
     return c.env.FRONTEND_URL;
   }
-  
+
   // Fallback to allowed origins
   if (c.env.ALLOWED_ORIGINS) {
     const origins = c.env.ALLOWED_ORIGINS.split(',');
     return origins[0] || 'http://localhost:5173';
   }
-  
+
   // Development fallback
   return 'http://localhost:5173';
+}
+
+/**
+ * Cookie domain for session cookies. Derived from the request hostname so
+ * the cookie lands on the apex domain and is visible to sibling subdomains
+ * (auth.in8.sh sets Domain=.in8.sh, which in8.sh pages can read). COOKIE_DOMAIN
+ * env overrides for setups where the heuristic is wrong.
+ */
+function getCookieDomain(c: any): string | undefined {
+  if (c.env.COOKIE_DOMAIN) {
+    return c.env.COOKIE_DOMAIN;
+  }
+  const hostname = new URL(c.req.url).hostname;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return undefined;
+  }
+  const parts = hostname.split('.');
+  if (parts.length < 2) {
+    return undefined;
+  }
+  return '.' + parts.slice(-2).join('.');
+}
+
+/**
+ * Extract and validate the post-login redirect path carried through OAuth
+ * state. Only same-site absolute paths are accepted (no scheme, no
+ * protocol-relative), preventing open redirects.
+ */
+function parseStateRedirect(state?: string): string {
+  if (!state) {
+    return '/';
+  }
+  try {
+    const b64 = state.replace(/-/g, '+').replace(/_/g, '/');
+    const parsed = JSON.parse(atob(b64));
+    const r = parsed?.r;
+    if (typeof r === 'string' && r.length <= 512 && /^\/(?!\/)/.test(r)) {
+      return r;
+    }
+  } catch {
+    // Foreign or legacy state format; fall through to the default.
+  }
+  return '/';
+}
+
+/** Build the OAuth state parameter, embedding the validated redirect path. */
+function buildOAuthState(redirectPath: string): string {
+  const payload = JSON.stringify({
+    r: redirectPath,
+    t: Date.now(),
+    n: crypto.randomUUID(),
+  });
+  return btoa(payload).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }

@@ -10,19 +10,33 @@ import { Logger } from '@/middleware/logging';
 export class ConvexService {
   private apiUrl: string;
   private apiKey: string;
+  private syncSecret?: string;
   private protocolHandler: ConvexProtocolHandler;
   private logger: Logger;
 
   constructor(env: CloudflareEnv, logger: Logger) {
     this.apiUrl = env.CONVEX_URL;
     this.apiKey = env.CONVEX_DEPLOY_KEY;
+    this.syncSecret = env.CONVEX_SYNC_SECRET;
     this.logger = logger;
-    
+
     // Initialize Convex protocol handler
     this.protocolHandler = createConvexProtocolHandler({
       deploymentUrl: this.apiUrl,
       apiKey: this.apiKey
     }, logger);
+  }
+
+  /**
+   * Headers for Convex HTTP actions. The X-Sync-Key proves the request comes
+   * from the gateway; the Convex side rejects writes without it.
+   */
+  private convexSyncHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.syncSecret) {
+      headers['X-Sync-Key'] = this.syncSecret;
+    }
+    return headers;
   }
 
   /**
@@ -48,9 +62,7 @@ export class ConvexService {
       const convexSiteUrl = this.apiUrl.replace('convex.cloud', 'convex.site');
       const response = await fetch(`${convexSiteUrl}/api/users/get-by-id`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: this.convexSyncHeaders(),
         body: JSON.stringify({ userId }),
       });
 
@@ -90,9 +102,7 @@ export class ConvexService {
       const convexSiteUrl = this.apiUrl.replace('convex.cloud', 'convex.site');
       const response = await fetch(`${convexSiteUrl}/api/users/update-last-login`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: this.convexSyncHeaders(),
         body: JSON.stringify({ userId }),
       });
 
@@ -116,9 +126,7 @@ export class ConvexService {
       const convexSiteUrl = this.apiUrl.replace('convex.cloud', 'convex.site');
       const response = await fetch(`${convexSiteUrl}/api/users/get-permissions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: this.convexSyncHeaders(),
         body: JSON.stringify({ userId }),
       });
 
@@ -442,9 +450,7 @@ export class ConvexService {
       // Convex will return an error about missing function, but that's expected
       const response = await fetch(`${this.apiUrl}/api/query`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: this.convexSyncHeaders(),
         body: JSON.stringify({
           path: 'system:health',
           args: {},
@@ -477,9 +483,7 @@ export class ConvexService {
       const convexSiteUrl = this.apiUrl.replace('convex.cloud', 'convex.site');
       const response = await fetch(`${convexSiteUrl}/api/auth/oauth-user`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: this.convexSyncHeaders(),
         body: JSON.stringify({
           provider,
           oauthUserId,

@@ -93,10 +93,11 @@ auth/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/auth/signin/google` | GET | Initiate Google OAuth flow |
+| `/api/auth/signin/google` | GET | Initiate Google OAuth flow. Optional `?redirect=/some/path` returns the user to that site path after login (validated against open redirects, carried through OAuth state) |
 | `/api/auth/callback/google` | GET | OAuth callback handler |
 | `/api/auth/logout` | POST | Logout and clear session |
 | `/api/auth/session` | GET | Get current session info |
+| `/api/auth/get-session` | GET | Session probe for sibling services: 200 with user JSON when authenticated, 204 when not. Send the session cookie |
 | `/api/auth/me` | GET | Get authenticated user |
 | `/api/auth/refresh` | POST | Refresh access token |
 
@@ -133,10 +134,42 @@ CONVEX_SITE_URL=https://your-deployment.convex.site
 FRONTEND_URL=https://yourdomain.com
 ALLOWED_ORIGINS=https://yourdomain.com,https://staging.yourdomain.com
 
+# Required if using the bundled Convex component (convex/ directory)
+# Shared secret proving gateway identity to the Convex HTTP actions; without
+# it the actions refuse writes, so outsiders cannot forge session rows.
+CONVEX_SYNC_SECRET=long-random-string
+
 # Optional
 SESSION_COOKIE_NAME=auth_session
 NODE_ENV=production
+# Cookie domain override. By default the gateway derives the apex from the
+# request hostname (auth.yourdomain.com sets Domain=.yourdomain.com so sibling
+# subdomains and the apex see the session). Set this only when the heuristic
+# is wrong for your DNS layout.
+COOKIE_DOMAIN=.yourdomain.com
 ```
+
+### Cookies
+
+Two cookies are set on login, both scoped to the apex domain:
+
+- `auth_session` (HttpOnly): the session credential used by the gateway.
+- `auth_session_id` (JS-readable): the session id only, for the frontend's
+  reactive Convex subscription (multi-tab sync, below).
+
+### Bundled Convex component (`convex/`)
+
+The `convex/` directory is a self-contained Convex deployment implementing the
+gateway's backing store: user upsert on OAuth login and a live session mirror.
+Deploy it to your own Convex project (`bunx convex deploy`), point `CONVEX_URL`
+and `CONVEX_SITE_URL` at it, and set `CONVEX_SYNC_SECRET` both as a worker
+secret and a Convex environment variable.
+
+What it enables: every browser tab subscribes to the public reactive query
+`sessions:isActive` with the JS-readable session id. Logging out in any tab
+deletes the session row, Convex pushes the change, and every other tab flips
+to logged-out without a refresh. Nothing in the component is specific to any
+particular site; any frontend on a sibling subdomain gets the same behavior.
 
 ## Development
 

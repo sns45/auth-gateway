@@ -39,6 +39,18 @@ export class SessionService {
   }
 
   /**
+   * Headers for Convex sync HTTP actions. The X-Sync-Key proves the request
+   * comes from the gateway, so outsiders cannot forge or delete session rows.
+   */
+  private convexSyncHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.env.CONVEX_SYNC_SECRET) {
+      headers['X-Sync-Key'] = this.env.CONVEX_SYNC_SECRET;
+    }
+    return headers;
+  }
+
+  /**
    * Get environment prefix for KV keys
    */
   private getEnvPrefix(): string {
@@ -103,9 +115,7 @@ export class SessionService {
       try {
         await fetch(`${this.convexSiteUrl}/api/sessions/create`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: this.convexSyncHeaders(),
           body: JSON.stringify({
             sessionId,
             userId: user.id,
@@ -138,9 +148,7 @@ export class SessionService {
           try {
             const response = await fetch(`${this.convexSiteUrl}/api/sessions/get`, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
+              headers: this.convexSyncHeaders(),
               body: JSON.stringify({ sessionId }),
             });
             
@@ -217,9 +225,7 @@ export class SessionService {
           try {
             await fetch(`${this.convexSiteUrl}/api/sessions/update-activity`, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
+              headers: this.convexSyncHeaders(),
               body: JSON.stringify({ sessionId }),
             });
           } catch (error) {
@@ -244,9 +250,7 @@ export class SessionService {
         try {
           await fetch(`${this.convexSiteUrl}/api/sessions/update-activity`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers: this.convexSyncHeaders(),
             body: JSON.stringify({ sessionId }),
           });
         } catch (error) {
@@ -302,9 +306,7 @@ export class SessionService {
         try {
           await fetch(`${this.convexSiteUrl}/api/sessions/delete`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
+            headers: this.convexSyncHeaders(),
             body: JSON.stringify({ sessionId }),
           });
         } catch (error) {

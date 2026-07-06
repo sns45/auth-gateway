@@ -166,9 +166,21 @@ export class RateLimitService {
       try {
         const authContext = c.get('auth') as AuthContext;
         const ip = this.getClientIP(c);
-        
-        // Determine rate limit configuration
-        const configKey = customConfig || this.getRateLimitConfig(authContext);
+
+        // Determine rate limit configuration. This middleware runs before
+        // auth is established, so authContext is usually absent here; treat
+        // requests that present session credentials as authenticated for
+        // budgeting (presence is spoofable, but it only buys the larger
+        // bucket, and invalid sessions still fail auth downstream).
+        let configKey = customConfig || this.getRateLimitConfig(authContext);
+        if (configKey === 'anonymous') {
+          const hasSessionCredentials =
+            !!c.req.header('authorization') ||
+            (c.req.header('cookie') || '').includes('auth_session');
+          if (hasSessionCredentials) {
+            configKey = 'authenticated';
+          }
+        }
         
         // Generate identifier
         let identifier: string;

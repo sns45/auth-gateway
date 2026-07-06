@@ -107,7 +107,9 @@ app.use('*', createEnhancedCORSMiddleware());
  * Apply rate limiting (except for health checks)
  */
 app.use('*', createRateLimitMiddleware({
-  skipPaths: ['/health', '/metrics'],
+  // Session probes are read-only, fired on every page view by frontends,
+  // and each rate limit check costs KV reads/writes; exempt them.
+  skipPaths: ['/health', '/metrics', '/api/auth/get-session', '/auth/get-session'],
 }));
 
 /**

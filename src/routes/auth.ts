@@ -8,7 +8,7 @@ import { createJWT, createRefreshToken } from '@/utils/jwt';
 import { SessionService } from '@/services/session';
 import { ConvexService } from '@/services/convex';
 import { OAuthService } from '@/services/oauth';
-import { requireAuth, optionalAuth } from '@/middleware/auth';
+import { requireAuth, optionalAuth, collectCookieValues } from '@/middleware/auth';
 import { createRateLimitMiddleware } from '@/middleware/rate-limit';
 import { Logger } from '@/middleware/logging';
 
@@ -410,12 +410,22 @@ authRoutes.post('/logout', optionalAuth, async (c) => {
   const authContext = c.get('auth');
   
   try {
+    // Delete every session id presented. Browsers can hold duplicate
+    // auth_session cookies (a stale host-only one shadowing the current
+    // domain-scoped one); each value is a bearer credential, so deleting all
+    // of them is both safe and what the user asked for.
+    const sessionService = new SessionService(c.env, logger);
+    const logoutCandidates = collectCookieValues(
+      c.req.header('cookie') || '',
+      c.env.SESSION_COOKIE_NAME || 'auth_session'
+    );
+    for (const sid of logoutCandidates) {
+      await sessionService.deleteSession(sid);
+    }
     if (authContext) {
-      const sessionService = new SessionService(c.env, logger);
-      
-      // Delete session
-      await sessionService.deleteSession(authContext.session_id);
-      
+      if (!logoutCandidates.includes(authContext.session_id)) {
+        await sessionService.deleteSession(authContext.session_id);
+      }
       logger.info(`User logged out`, { userId: authContext.user.id });
     }
 
@@ -426,9 +436,14 @@ authRoutes.post('/logout', optionalAuth, async (c) => {
     const clearDomain = isProduction ? getCookieDomain(c) : undefined;
     const cookieDomain = clearDomain ? `; Domain=${clearDomain}` : '';
 
-    // Clear both cookies by setting them to expire in the past
-    c.header('Set-Cookie', `auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${cookieDomain}; HttpOnly; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
-    c.header('Set-Cookie', `auth_session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${cookieDomain}; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
+    // Clear both cookies at both scopes: the domain-scoped pair set at login
+    // and any host-only leftovers from earlier deployments (a domain-scoped
+    // expiry cannot clear a host-only cookie).
+    const clearScopes = cookieDomain ? [cookieDomain, ''] : [''];
+    for (const scope of clearScopes) {
+      c.header('Set-Cookie', `auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${scope}; HttpOnly; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
+      c.header('Set-Cookie', `auth_session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${scope}; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
+    }
 
     return c.json({ success: true });
 
@@ -446,12 +461,20 @@ authRoutes.post('/signout', optionalAuth, async (c) => {
   const authContext = c.get('auth');
   
   try {
+    // Delete every session id presented (see /logout for the duplicate
+    // cookie rationale).
+    const sessionService = new SessionService(c.env, logger);
+    const signoutCandidates = collectCookieValues(
+      c.req.header('cookie') || '',
+      c.env.SESSION_COOKIE_NAME || 'auth_session'
+    );
+    for (const sid of signoutCandidates) {
+      await sessionService.deleteSession(sid);
+    }
     if (authContext) {
-      const sessionService = new SessionService(c.env, logger);
-      
-      // Delete session
-      await sessionService.deleteSession(authContext.session_id);
-      
+      if (!signoutCandidates.includes(authContext.session_id)) {
+        await sessionService.deleteSession(authContext.session_id);
+      }
       logger.info(`User signed out`, { userId: authContext.user.id });
     }
 
@@ -462,9 +485,14 @@ authRoutes.post('/signout', optionalAuth, async (c) => {
     const clearDomain = isProduction ? getCookieDomain(c) : undefined;
     const cookieDomain = clearDomain ? `; Domain=${clearDomain}` : '';
 
-    // Clear both cookies by setting them to expire in the past
-    c.header('Set-Cookie', `auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${cookieDomain}; HttpOnly; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
-    c.header('Set-Cookie', `auth_session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${cookieDomain}; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
+    // Clear both cookies at both scopes: the domain-scoped pair set at login
+    // and any host-only leftovers from earlier deployments (a domain-scoped
+    // expiry cannot clear a host-only cookie).
+    const clearScopes = cookieDomain ? [cookieDomain, ''] : [''];
+    for (const scope of clearScopes) {
+      c.header('Set-Cookie', `auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${scope}; HttpOnly; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
+      c.header('Set-Cookie', `auth_session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${scope}; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
+    }
 
     return c.json({ success: true });
 

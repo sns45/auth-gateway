@@ -38,13 +38,17 @@ export function createAuthMiddleware(options: {
         token = extractJWTFromHeader(authHeader);
       }
 
-      // 2. Check session cookie
+      // 2. Check session cookie. Browsers can hold several cookies with the
+      // same name (e.g. a host-only leftover shadowing a domain-scoped one),
+      // and getCookie() only surfaces the first, so validate every candidate
+      // value until one resolves to a live session.
       if (!token && requireSession) {
         const validatedEnv = c.get('validatedEnv');
         const cookieName = validatedEnv.SESSION_COOKIE_NAME || 'auth_session';
-        sessionId = getCookie(c, cookieName) || null;
-        
-        if (sessionId) {
+        const candidates = collectCookieValues(c.req.header('cookie') || '', cookieName);
+
+        for (const candidate of candidates) {
+          sessionId = candidate;
           // Validate session and extract token
           const sessionData = await sessionService.validateSession(sessionId);
           if (sessionData) {
@@ -280,3 +284,23 @@ export const requireAdmin = requireRole(['admin']);
  * User or admin authorization middleware
  */
 export const requireUser = requireRole(['user', 'admin']);
+/**
+ * Collect every value of a cookie name from a raw Cookie header. Browsers can
+ * send duplicates (host-only and domain-scoped cookies with the same name);
+ * exact-name matching avoids picking up cookies that merely share the prefix
+ * (auth_session vs auth_session_id).
+ */
+export function collectCookieValues(cookieHeader: string, name: string): string[] {
+  const values: string[] = [];
+  for (const part of cookieHeader.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) {
+      const value = part.slice(eq + 1).trim();
+      if (value && !values.includes(value)) {
+        values.push(value);
+      }
+    }
+  }
+  return values;
+}

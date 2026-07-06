@@ -12,24 +12,28 @@ export async function environmentDetectionMiddleware(
   next: Next
 ) {
   const hostname = new URL(c.req.url).hostname;
-  
-  // Determine environment based on hostname
-  let nodeEnv: 'production' | 'staging' | 'development' = 'development';
-  let logLevel: 'debug' | 'info' | 'warn' | 'error' = 'debug';
-  
-  if (hostname === 'auth.example.com') {
-    nodeEnv = 'production';
-    logLevel = 'warn';
-  } else if (hostname === 'auth-staging.example.com') {
-    nodeEnv = 'staging';
-    logLevel = 'info';
-  } else {
-    // Default to development for localhost and other domains
-    nodeEnv = 'development';
-    logLevel = 'debug';
+
+  // The configured NODE_ENV (wrangler vars / .dev.vars) is authoritative:
+  // hostnames are deployment-specific and must not be hardcoded here. Only
+  // when nothing is configured do we infer: localhost means development,
+  // an auth-staging.* hostname means staging, anything else deployed means
+  // production. Overriding a configured value from a hostname list is what
+  // once sent production sessions to the dev prefix and dropped the cookie
+  // Domain attribute.
+  let nodeEnv = c.env.NODE_ENV as 'production' | 'staging' | 'development' | undefined;
+  if (!nodeEnv) {
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      nodeEnv = 'development';
+    } else if (hostname.startsWith('auth-staging.')) {
+      nodeEnv = 'staging';
+    } else {
+      nodeEnv = 'production';
+    }
   }
-  
-  // Override the environment variables
+  const logLevel =
+    (c.env.LOG_LEVEL as 'debug' | 'info' | 'warn' | 'error' | undefined) ??
+    (nodeEnv === 'development' ? 'debug' : 'info');
+
   c.env.NODE_ENV = nodeEnv;
   c.env.LOG_LEVEL = logLevel;
   

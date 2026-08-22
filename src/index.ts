@@ -106,11 +106,19 @@ app.use('*', createEnhancedCORSMiddleware());
 /**
  * Apply rate limiting (except for health checks)
  */
-app.use('*', createRateLimitMiddleware({
+// Scoped to the routed surfaces ('/api/*' also covers '/api/auth/*') rather
+// than every path. Each rate limit check costs a KV write, so mounting this on
+// '*' meant unrouted paths paid for a write before the router could 404 them.
+// In practice those are almost entirely vulnerability scans (/.env, /@fs/...,
+// /.git/config), which is enough on its own to exhaust the daily KV write quota
+// and, once exhausted, to take real logins down with it.
+const rateLimit = createRateLimitMiddleware({
   // Session probes are read-only, fired on every page view by frontends,
   // and each rate limit check costs KV reads/writes; exempt them.
   skipPaths: ['/health', '/metrics', '/api/auth/get-session', '/auth/get-session'],
-}));
+});
+app.use('/auth/*', rateLimit);
+app.use('/api/*', rateLimit);
 
 /**
  * Mount route handlers

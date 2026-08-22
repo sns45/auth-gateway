@@ -93,27 +93,29 @@ export class SessionService {
     
     // Store in KV with TTL and environment prefix
     const key = `${this.getEnvPrefix()}:sessions:${sessionId}`;
+    // Any KV write failure falls through to Convex rather than failing the
+    // login. This used to require the error message to contain 'limit
+    // exceeded', which made the documented failover depend on matching a
+    // string the runtime is free to change; a daily-cap 429 that phrased
+    // itself differently would have been rethrown and broken login outright.
+    let storedInKv = false;
     try {
       await this.kv.put(key, encryptedData, {
         expirationTtl: this.maxAge,
       });
-    } catch (error: any) {
-      // If we hit KV limits, log it but continue with Convex-only storage
-      if (error.message?.includes('limit exceeded')) {
-        this.logger?.error('KV write limit exceeded, falling back to Convex-only storage', { 
-          error: error.message,
-          sessionId 
-        });
-        // Continue execution - Convex will be the source of truth
-      } else {
-        throw error; // Re-throw other errors
-      }
+      storedInKv = true;
+    } catch (error) {
+      this.logger?.error('KV session write failed, falling back to Convex', {
+        error: error instanceof Error ? error.message : String(error),
+        sessionId,
+      });
     }
 
     // Sync with Convex for reactive updates
+    let storedInConvex = false;
     if (this.convexSiteUrl) {
       try {
-        await fetch(`${this.convexSiteUrl}/api/sessions/create`, {
+        const response = await fetch(`${this.convexSiteUrl}/api/sessions/create`, {
           method: 'POST',
           headers: this.convexSyncHeaders(),
           body: JSON.stringify({
@@ -127,9 +129,22 @@ export class SessionService {
             userAgent,
           }),
         });
+        storedInConvex = response.ok;
+        if (!response.ok) {
+          this.logger?.warn('Convex rejected the session write', {
+            status: response.status,
+            sessionId,
+          });
+        }
       } catch (error) {
         this.logger?.warn('Failed to sync session to Convex', { error, sessionId });
       }
+    }
+
+    // Never hand back a session id that no store accepted: the caller would set
+    // a cookie for a session that cannot be validated on the next request.
+    if (!storedInKv && !storedInConvex) {
+      throw new Error('Session could not be persisted to KV or Convex');
     }
 
     return { sessionId, sessionData };

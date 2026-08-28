@@ -232,19 +232,70 @@ describe('drop in client', () => {
 });
 
 describe('live session channel', () => {
+  test('refuses a cross site origin before it can hijack the channel', async () => {
+    // A websocket handshake is exempt from the same origin policy and still
+    // carries cookies, so without this check any page could open a channel to
+    // a signed in visitor's hub. SameSite=Lax blocks it today only because the
+    // gateway and its sites share a registrable domain; this must not depend
+    // on that.
+    const res = await app.request(
+      `${GATEWAY}/api/auth/session-stream`,
+      { headers: { origin: 'https://evil.example', upgrade: 'websocket' } },
+      env
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test('refuses a handshake that sends no origin at all', async () => {
+    // Browsers always send Origin on a websocket handshake, and this endpoint
+    // has no non browser caller, so absent means hand crafted.
+    const res = await app.request(
+      `${GATEWAY}/api/auth/session-stream`,
+      { headers: { upgrade: 'websocket' } },
+      env
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test('the origin gate is checked before the session is looked up', async () => {
+    // A hostile caller should not cost a database query.
+    let queried = false;
+    const watched = {
+      ...db,
+      prepare: (sql: string) => {
+        queried = true;
+        return (db as any).prepare(sql);
+      },
+    };
+    await app.request(
+      `${GATEWAY}/api/auth/session-stream`,
+      { headers: { origin: 'https://evil.example', upgrade: 'websocket' } },
+      { ...env, AUTH_DB: watched }
+    );
+    expect(queried).toBe(false);
+  });
+
   test('refuses a caller with no session, upgrade header or not', async () => {
     // Checked before the upgrade so the answer does not depend on the Upgrade
     // header surviving: workerd drops it on a non conforming handshake, which
     // turned this into a 426 on the first staging deploy.
-    for (const headers of [{ upgrade: 'websocket' }, {}]) {
-      const res = await app.request(`${GATEWAY}/api/auth/session-stream`, { headers }, env);
+    for (const extra of [{ upgrade: 'websocket' }, {}]) {
+      const res = await app.request(
+        `${GATEWAY}/api/auth/session-stream`,
+        { headers: { origin: ORIGIN, ...extra } },
+        env
+      );
       expect(res.status).toBe(401);
     }
   });
 
   test('refuses a plain GET rather than upgrading', async () => {
     const cookie = await createSessionCookie(db.raw);
-    const res = await app.request(`${GATEWAY}/api/auth/session-stream`, { headers: { cookie } }, env);
+    const res = await app.request(
+      `${GATEWAY}/api/auth/session-stream`,
+      { headers: { cookie, origin: ORIGIN } },
+      env
+    );
     expect(res.status).toBe(426);
   });
 });

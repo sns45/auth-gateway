@@ -40,6 +40,10 @@ LOG_LEVEL = "debug"
 GOOGLE_CLIENT_ID = "1222222345678999999-xxxxxxxxxxxxxxxxxx.apps.googleusercontent.com"
 OAUTH_BASE_URL = "http://localhost:8787"
 FRONTEND_URL = "http://localhost:5173"
+# Set to the shared parent of the gateway and the sites it signs in, e.g.
+# ".example.com". Unset, Better Auth scopes cookies to the gateway host alone
+# and the app never receives them.
+# COOKIE_DOMAIN = ".example.com"
 
 # Single worker with custom domains
 [[routes]]

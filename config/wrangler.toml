@@ -47,6 +47,10 @@ LOG_LEVEL = "info"
 GOOGLE_CLIENT_ID = "428616692025-tmncbvvk4k6lob3q185el3dv88v0i0j8.apps.googleusercontent.com"
 OAUTH_BASE_URL = "https://auth.in8.sh"
 FRONTEND_URL = "https://in8.sh"
+# Session cookies must be readable by every site the gateway signs in, not just
+# by the gateway itself. Without this, Better Auth falls back to the baseURL
+# host (auth.in8.sh), and in8.sh never receives the cookie on its own requests.
+COOKIE_DOMAIN = ".in8.sh"
 
 # Custom domain route on the in8.sh zone
 [[routes]]

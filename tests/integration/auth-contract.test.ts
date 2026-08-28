@@ -292,3 +292,26 @@ describe('fan out', () => {
     expect(published).toHaveLength(0);
   });
 });
+
+describe('cookie scope', () => {
+  test('session cookies are scoped to the parent domain, not the gateway host', async () => {
+    // Better Auth falls back to the baseURL host when crossSubDomainCookies has
+    // no explicit domain. That scopes the cookie to auth.<zone> alone, so the
+    // app on <zone> never receives it on its own requests and every server side
+    // session check there fails while the browser still looks signed in.
+    env.COOKIE_DOMAIN = '.example.com';
+    const res = await app.request(
+      `${GATEWAY}/api/auth/sign-in/social`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ provider: 'google', callbackURL: `${ORIGIN}/` }),
+      },
+      env
+    );
+
+    const setCookie = res.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('Domain=.example.com');
+    expect(setCookie).not.toContain('Domain=auth.example.com');
+  });
+});

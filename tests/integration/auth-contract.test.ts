@@ -315,3 +315,43 @@ describe('cookie scope', () => {
     expect(setCookie).not.toContain('Domain=auth.example.com');
   });
 });
+
+describe('security middleware rejections', () => {
+  test('an untrusted origin is refused with 403, not a masked 500', async () => {
+    // The production security stack is composed by hand. An earlier version
+    // awaited each middleware without returning its result, so a blocking
+    // middleware's Response was discarded, the context never finalised, and
+    // every rejection surfaced as INTERNAL_ERROR. Requests were still blocked,
+    // but a CSRF block looked exactly like a server fault.
+    const res = await app.request(
+      `${GATEWAY}/api/auth/sign-out`,
+      {
+        method: 'POST',
+        headers: { origin: 'https://evil.example', 'content-type': 'application/json' },
+        body: '{}',
+      },
+      env
+    );
+
+    expect(res.status).toBe(403);
+    expect((await res.json() as any).error.code).toBe('CSRF_ERROR');
+  });
+
+  test('an oversized request is refused with 413', async () => {
+    const res = await app.request(
+      `${GATEWAY}/api/auth/sign-out`,
+      {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          'content-length': String(5 * 1024 * 1024),
+        },
+        body: '{}',
+      },
+      env
+    );
+
+    expect(res.status).toBe(413);
+  });
+});

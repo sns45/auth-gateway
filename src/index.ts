@@ -71,25 +71,24 @@ app.use('*', async (c, next) => {
 /**
  * Apply security middleware stack based on detected environment
  */
+// Registered individually so Hono's own composer runs them. A hand rolled
+// chain cannot work here: these middlewares `await next()` without returning
+// its result, which is fine under Hono because it tracks the response on the
+// context, but means a composed-by-hand chain silently drops the Response a
+// blocking middleware returns. That turned every CSRF and request-size
+// rejection into an unfinalised context, and the global handler reported it as
+// a 500, so a blocked attack was indistinguishable from a server fault.
+for (const middleware of createSecurityStack()) {
+  app.use('*', async (c, next) => {
+    if (!c.get('environment')?.isProduction) return next();
+    return middleware(c, next);
+  });
+}
+
+const developmentSecurity = createDevelopmentSecurityMiddleware();
 app.use('*', async (c, next) => {
-  const env = c.get('environment');
-  if (env.isProduction) {
-    // Production security middleware
-    const stack = createSecurityStack();
-    // Apply security middleware in sequence
-    let currentNext = next;
-    for (let i = stack.length - 1; i >= 0; i--) {
-      const middleware = stack[i];
-      const previousNext = currentNext;
-      currentNext = async () => {
-        await middleware(c, previousNext);
-      };
-    }
-    await currentNext();
-  } else {
-    // Development security middleware (more relaxed)
-    await createDevelopmentSecurityMiddleware()(c, next);
-  }
+  if (c.get('environment')?.isProduction) return next();
+  return developmentSecurity(c, next);
 });
 
 /**

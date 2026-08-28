@@ -14,9 +14,10 @@ import { environmentDetectionMiddleware } from '@/middleware/environment';
 
 // Routes
 import { authRoutes } from '@/routes/auth';
-import { proxyRoutes } from '@/routes/proxy';
 import { healthRoutes } from '@/routes/health';
-import { openApiRoutes } from '@/routes/openapi';
+import { sessionStreamRoutes } from '@/routes/session-stream';
+import { BROWSER_CLIENT_JS } from '@/client/browser-client';
+import { DEMO_PAGE_HTML } from '@/client/demo-page';
 
 /**
  * Hono Authentication Gateway Application
@@ -39,10 +40,12 @@ app.use('*', async (c, next) => {
       globalThis.envLogged = true;
     }
     
-    // Validate environment variables and add AUTH_STORE from runtime
+    // Validate environment variables and add the runtime bindings
     const validatedEnv = {
       ...EnvironmentSchema.parse(c.env),
-      AUTH_STORE: c.env.AUTH_STORE // Add the actual KV namespace from Cloudflare runtime
+      AUTH_STORE: c.env.AUTH_STORE,  // KV namespace from the Cloudflare runtime
+      AUTH_DB: c.env.AUTH_DB,        // D1 session database from the Cloudflare runtime
+      SESSION_HUB: c.env.SESSION_HUB // Per user fan out for live session changes
     };
     
     // Store validated environment for use in other middleware
@@ -117,7 +120,6 @@ const rateLimit = createRateLimitMiddleware({
   // and each rate limit check costs KV reads/writes; exempt them.
   skipPaths: ['/health', '/metrics', '/api/auth/get-session', '/auth/get-session'],
 });
-app.use('/auth/*', rateLimit);
 app.use('/api/*', rateLimit);
 
 /**
@@ -191,64 +193,39 @@ app.get('/test', (c) => {
 // Health check routes (no authentication required)
 app.route('/health', healthRoutes);
 
-// API documentation routes (no authentication required)
-app.route('/docs', openApiRoutes);
-
-// Also serve OpenAPI spec directly at root level for easier access
-app.get('/openapi.yaml', (c) => {
-  return c.redirect('/docs/openapi.yaml', 301);
-});
-
-// Authentication routes
-app.route('/auth', authRoutes);
-
-// Also mount at /api/auth for backward compatibility (must be before /api proxy)
-app.route('/api/auth', authRoutes);
-
-
-// API proxy routes (authentication required) - must be last
-// Mount proxy routes directly on /api path
-app.route('/api', proxyRoutes);
-
-// Debug endpoint to check route registration (development only)
-app.get('/debug/routes', (c) => {
-  const env = c.get('environment');
-  if (env.isProduction) {
-    return c.notFound();
-  }
-  
-  return c.json({
-    message: 'Route debugging information',
-    registered_routes: {
-      websocket_endpoints: [
-        'GET /api/ws - WebSocket proxy (requires auth)',
-        'GET /api/:version/sync - Versioned sync endpoint (requires auth)',
-        'ALL /api/* - General proxy (catch-all, requires auth)'
-      ],
-      auth_endpoints: [
-        'POST /auth/login',
-        'POST /auth/logout',
-        'GET /auth/profile',
-        'ALL /auth/* - Better Auth routes',
-        'ALL /api/auth/* - Better Auth routes (backward compatibility)'
-      ],
-      health_endpoints: [
-        'GET /health',
-        'GET /health/detailed',
-        'GET /health/ready',
-        'GET /health/live'
-      ]
+// Better Auth owns everything under /api/auth, including its own generated
+// OpenAPI reference at /api/auth/reference. Mounted only here: Better Auth
+// matches on its full basePath, so a second mount at /auth would not resolve.
+// Drop in browser client. Onboarding a new site is a script tag plus a
+// subscribe call; the sync mechanics live in the gateway, not in each client.
+app.get('/client.js', () => {
+  return new Response(BROWSER_CLIENT_JS, {
+    headers: {
+      'content-type': 'application/javascript; charset=utf-8',
+      'cache-control': 'public, max-age=300',
+      'access-control-allow-origin': '*',
     },
-    route_order: [
-      '1. Health checks',
-      '2. Documentation', 
-      '3. Authentication endpoints',
-      '4. OAuth callback handler (specific route)',
-      '5. Better Auth proxy (general /api/auth/*)',
-      '6. API proxy with WebSocket support (auth required)'
-    ]
   });
 });
+
+// Live integration example. Also the only way to start an OAuth flow by hand:
+// Better Auth keeps the state in a browser cookie as well as in the database,
+// so a sign in URL minted outside a browser always fails state_mismatch.
+app.get('/demo', () => {
+  return new Response(DEMO_PAGE_HTML, {
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-robots-tag': 'noindex',
+    },
+  });
+});
+
+// Live session channel. Mounted ahead of the Better Auth passthrough, which
+// would otherwise swallow the path as an unknown Better Auth route.
+app.route('/api/auth/session-stream', sessionStreamRoutes);
+
+app.route('/api/auth', authRoutes);
 
 /**
  * Catch-all for undefined routes
@@ -323,11 +300,14 @@ export type { CloudflareEnv } from '@/types/auth';
 export type { ApiResponse, HealthCheckResponse } from '@/types/api';
 
 /**
- * Export services for testing
+ * Export the Better Auth factory for tests and for embedding the gateway
  */
-export { SessionService } from '@/services/session';
-export { ConvexService } from '@/services/convex';
-export { OAuthService } from '@/services/oauth';
+export { createAuth } from '@/auth';
+
+/**
+ * Durable Object class, referenced by the SESSION_HUB binding in wrangler.toml
+ */
+export { SessionHub } from '@/durable/session-hub';
 
 /**
  * Development server support (for local development)

@@ -114,40 +114,37 @@ export interface CORSConfig {
 
 // Environment Types
 export interface CloudflareEnv {
-  // Single KV Namespace for all storage
+  // Authoritative session store. D1 is strongly consistent, so a revoked
+  // session is gone on the very next read; KV was not, and could keep
+  // authenticating a revoked session for up to a minute.
+  AUTH_DB: D1Database;
+
+  // KV, now only for rate limit counters
   AUTH_STORE: KVNamespace;
+
+  // One Durable Object per user, fanning session changes out to that user's
+  // open tabs across every device.
+  SESSION_HUB: DurableObjectNamespace;
   
   // Secrets (from Doppler or wrangler secret)
-  JWT_SECRET: string;
-  SESSION_SECRET: string;
   BETTER_AUTH_SECRET: string;
-  CONVEX_DEPLOY_KEY: string;
   GOOGLE_CLIENT_SECRET?: string;
-  
+
   // Variables (from wrangler.toml)
   NODE_ENV: 'production' | 'staging' | 'development';
   PORT?: string | number;
-  CONVEX_URL: string;
-  CONVEX_SITE_URL: string;
   ALLOWED_ORIGINS: string;
   FRONTEND_URL?: string;
   GOOGLE_CLIENT_ID?: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
-  
-  // Additional properties
+
+  // Rate limiting (KV backed)
   RATE_LIMIT_WINDOW?: string | number;
   RATE_LIMIT_MAX?: string | number;
   KV_NAMESPACE_ID?: string;
-  
-  // Session configuration
-  SESSION_COOKIE_NAME?: string;
-  SESSION_TIMEOUT?: string | number;
 
-  // Cookie domain override (defaults to apex of the request hostname)
+  // Cookie domain override (defaults to the apex of the request hostname)
   COOKIE_DOMAIN?: string;
-
-  // Shared secret proving gateway identity to Convex HTTP actions
-  CONVEX_SYNC_SECRET?: string;
 
   // OAuth Base URL for redirects
   OAUTH_BASE_URL?: string;

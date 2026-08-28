@@ -1,352 +1,203 @@
 # Authentication Gateway
 
-A lightweight authentication gateway service built with Hono.js on Cloudflare Workers, providing OAuth authentication, session management, and secure API proxying for modern web applications.
+One hosted sign in for many sites. Point a page at it with two lines, and every
+tab that page opens stays in sync, on every device, without a reload.
 
-## Overview
+## Adding a site
 
-<div align="center">
-  <img src="assets/hero.png" alt="Authentication Gateway Architecture" width="600" />
-</div>
-
-
-This auth gateway serves as a central authentication service, handling:
-- Google OAuth authentication
-- Session management with Cloudflare KV storage
-- Secure cookie-based authentication
-- API proxying with authentication headers
-- Real-time session synchronization via Convex
-
-
-## Tech Stack
-
-- **Runtime**: Cloudflare Workers
-- **Framework**: Hono.js
-- **Session Storage**: Cloudflare KV (with Convex fallback)
-- **Database**: Convex (real-time backend)
-- **OAuth Provider**: Google
-- **Language**: TypeScript
-
-## Features
-
-### 🔐 Authentication
-- Google OAuth 2.0 authentication flow
-- JWT token generation with secure HTTP-only cookies
-- Session management with automatic expiration
-- Rate-limited authentication endpoints
-
-### 🍪 Cookie Architecture
-- `auth_session`: HTTP-only secure cookie for server validation
-- `auth_session_id`: Non-HTTP-only cookie for JavaScript access
-- Cross-subdomain cookie support
-- SameSite=Lax for OAuth compatibility
-
-### 🚀 Performance Optimizations
-- KV write rate limiting (5-minute update intervals)
-- Convex fallback for KV limit exceeded scenarios
-- Efficient session validation with caching
-- Minimal latency through edge deployment
-
-### 🛡️ Security
-- CORS configuration for multi-domain support
-- Rate limiting on all endpoints
-- Encrypted session data in KV storage
-- OAuth state parameter for CSRF protection
-- Comprehensive security headers
-
-## Project Structure
-
-```
-auth/
-├── src/
-│   ├── index.ts              # Main Cloudflare Worker entry
-│   ├── routes/
-│   │   ├── auth.ts          # Authentication endpoints
-│   │   ├── health.ts        # Health check endpoints
-│   │   └── proxy.ts         # API proxy endpoints
-│   ├── services/
-│   │   ├── session.ts       # Session management with KV
-│   │   ├── convex.ts        # Convex backend integration
-│   │   └── oauth.ts         # Google OAuth implementation
-│   ├── middleware/
-│   │   ├── auth.ts          # Authentication middleware
-│   │   ├── cors.ts          # CORS configuration
-│   │   ├── rate-limit.ts    # Rate limiting
-│   │   ├── security.ts      # Security headers
-│   │   └── logging.ts       # Structured logging
-│   ├── utils/
-│   │   ├── jwt.ts           # JWT utilities
-│   │   ├── crypto.ts        # Encryption utilities
-│   │   └── validation.ts    # Request validation
-│   └── types/               # TypeScript definitions
-├── assets/                  # Static assets and images
-│   └── architecture-diagram.png  # System architecture diagram
-├── config/
-│   └── wrangler.toml        # Cloudflare Workers config
-├── scripts/                 # Deployment and utility scripts
-├── tests/                   # Test suites
-└── docs/                    # Documentation
+```html
+<script src="https://auth.in8.sh/client.js"></script>
+<script>
+  authGateway.subscribe(function (session) {
+    render(session ? session.user : null);
+  });
+</script>
 ```
 
-## API Endpoints
+That is the integration. No package to install, no session polling, no sync
+code. `authGateway` also exposes `signIn(provider, {callbackURL})`,
+`signOut()`, and `refresh()`.
 
-### Authentication
+Server side, validate a request by asking the gateway:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/auth/signin/google` | GET | Initiate Google OAuth flow. Optional `?redirect=/some/path` returns the user to that site path after login (validated against open redirects, carried through OAuth state) |
-| `/api/auth/callback/google` | GET | OAuth callback handler |
-| `/api/auth/logout` | POST | Logout and clear session |
-| `/api/auth/session` | GET | Get current session info |
-| `/api/auth/get-session` | GET | Session probe for sibling services: 200 with user JSON when authenticated, 204 when not. Send the session cookie |
-| `/api/auth/me` | GET | Get authenticated user |
-| `/api/auth/refresh` | POST | Refresh access token |
-
-### Health Checks
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Basic health check |
-| `/` | GET | API info and status |
-
-### Proxy
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/proxy/*` | ANY | Proxy authenticated requests to backend services |
-
-## Environment Variables
-
-```env
-# Required - Authentication
-JWT_SECRET=your-jwt-secret-here
-SESSION_SECRET=your-session-secret-here
-
-# Required - OAuth
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-OAUTH_BASE_URL=https://auth.yourdomain.com
-
-# Required - Backend Integration
-CONVEX_URL=https://your-deployment.convex.cloud
-CONVEX_SITE_URL=https://your-deployment.convex.site
-
-# Required - Frontend
-FRONTEND_URL=https://yourdomain.com
-ALLOWED_ORIGINS=https://yourdomain.com,https://staging.yourdomain.com
-
-# Required if using the bundled Convex component (convex/ directory)
-# Shared secret proving gateway identity to the Convex HTTP actions; without
-# it the actions refuse writes, so outsiders cannot forge session rows.
-CONVEX_SYNC_SECRET=long-random-string
-
-# Optional
-SESSION_COOKIE_NAME=auth_session
-NODE_ENV=production
-# Cookie domain override. By default the gateway derives the apex from the
-# request hostname (auth.yourdomain.com sets Domain=.yourdomain.com so sibling
-# subdomains and the apex see the session). Set this only when the heuristic
-# is wrong for your DNS layout.
-COOKIE_DOMAIN=.yourdomain.com
+```js
+const res = await fetch("https://auth.in8.sh/api/auth/get-session", {
+  headers: { cookie: request.headers.get("cookie") ?? "" },
+});
+const session = await res.json(); // { user, session } or null
 ```
 
-### Cookies
+Two things to get right when the client is on Cloudflare too:
 
-Two cookies are set on login, both scoped to the apex domain:
+- Add the site's origin to `ALLOWED_ORIGINS`, or its browser calls are blocked.
+- Call the gateway through a **service binding**, not over its public hostname.
+  Same zone subrequests bypass Worker routes, so a plain `fetch` to
+  `auth.in8.sh` from another Worker on the same zone reaches the zone origin
+  instead of the gateway.
 
-- `auth_session` (HttpOnly): the session credential used by the gateway.
-- `auth_session_id` (JS-readable): the session id only, for the frontend's
-  reactive Convex subscription (multi-tab sync, below).
+## How it works
 
-### Bundled Convex component (`convex/`)
+| Layer | Choice |
+|---|---|
+| Runtime | Cloudflare Workers, Hono |
+| Auth | [Better Auth](https://better-auth.com) as a library, running in the worker |
+| Sessions | Cloudflare D1 |
+| Live sync | One Durable Object per user, WebSocket hibernation |
+| Rate limits | Cloudflare KV |
 
-The `convex/` directory is a self-contained Convex deployment implementing the
-gateway's backing store: user upsert on OAuth login and a live session mirror.
-Deploy it to your own Convex project (`bunx convex deploy`), point `CONVEX_URL`
-and `CONVEX_SITE_URL` at it, and set `CONVEX_SYNC_SECRET` both as a worker
-secret and a Convex environment variable.
+Better Auth is a dependency, not a service. Nothing leaves your infrastructure:
+the OAuth code exchange runs in your worker with your client secret, sessions
+are rows in your D1, and cookies are signed with your `BETTER_AUTH_SECRET`. The
+only third party in a sign in is the identity provider itself.
 
-What it enables: every browser tab subscribes to the public reactive query
-`sessions:isActive` with the JS-readable session id. Logging out in any tab
-deletes the session row, Convex pushes the change, and every other tab flips
-to logged-out without a refresh. Nothing in the component is specific to any
-particular site; any frontend on a sibling subdomain gets the same behavior.
+### Sessions are in D1, deliberately
 
-## Development
+They used to be in KV. KV is eventually consistent: a delete takes up to 60
+seconds to reach every colo, and reads are additionally served from a per colo
+edge cache. A revoked session kept authenticating elsewhere for up to a minute.
 
-### Prerequisites
+D1 sends every query to the primary instance unless the Sessions API is used,
+so a delete is visible to the very next read. Two invariants keep it that way,
+both pinned by tests in `tests/unit/session-revocation.test.ts`:
 
-- Node.js 18+
-- Cloudflare Workers account
-- Wrangler CLI installed globally
-- Convex deployment
+- **No `secondaryStorage`.** Better Auth checks it before the database and
+  short circuits on a hit. Backed by KV, that serves revoked sessions from a
+  stale colo, which is the exact bug this moved off KV to fix.
+- **No `session.cookieCache`.** It keeps the session in a signed cookie, and a
+  server cannot delete a cookie on someone else's device.
 
-### Local Development
+If D1 read replication is ever adopted, session reads must stay pinned to the
+primary for the same reason.
+
+### Live sync
+
+Three mechanisms, because no single one covers every case:
+
+| Mechanism | Covers | Why the others cannot |
+|---|---|---|
+| `BroadcastChannel` | same origin tabs, instantly | works while signed out, so it is what carries a **sign in** to other tabs |
+| WebSocket to the user's Durable Object | another device revoking a session | reaches an idle tab; needs a session to address the hub, so it cannot cover sign in |
+| refetch on `visibilitychange` | anything missed while hidden | backstop |
+
+The Durable Object exists because the request that revokes a session and the
+request holding a tab's connection run in different isolates, usually in
+different colos, and neither can reach the other. A DO addressed by
+`idFromName(userId)` is the one place both can find.
+
+Its events carry no state, only `{type, reason, at}`. The hub is per user, so a
+push reaches that user's tabs on **every** device, but signing out only ends
+the session on the device that did it. Broadcasting "you are signed out" would
+wrongly log out the others. Each tab re-verifies with `get-session` and reaches
+its own conclusion, and no session identifier ever goes on the wire.
+
+Hibernation is what makes this affordable: an idle connection costs nothing.
+Holding the same connections on SSE would bill duration for as long as a tab is
+open.
+
+## Endpoints
+
+| Path | Purpose |
+|---|---|
+| `/demo` | live integration example; open it in two tabs to see the sync |
+| `/client.js` | the drop in browser client |
+| `/api/auth/*` | Better Auth, passthrough |
+| `/api/auth/reference` | OpenAPI spec, generated from the live config |
+| `/api/auth/session-stream` | WebSocket, requires a session |
+| `/health`, `/health/ready`, `/health/live`, `/health/detailed` | queries D1 for real; 503 when it is down |
+
+The reference is generated rather than written, so it cannot drift from what
+the gateway serves.
+
+## Running it
 
 ```bash
-# Install dependencies
-npm install
-
-# Copy environment template
-cp .env.template .env
-# Edit .env with your values
-
-# Run locally with Wrangler
-npm run dev
-
-# Run with remote KV bindings
-npm run dev:remote
+bun install
+bun run dev              # wrangler dev against config/wrangler.toml
+bun test                 # vitest
+bun run typecheck
 ```
 
-### Testing
+### Configuration
+
+Variables in `config/wrangler.toml`:
+
+| Name | Purpose |
+|---|---|
+| `OAUTH_BASE_URL` | the gateway's own origin; OAuth callbacks are built from it |
+| `ALLOWED_ORIGINS` | comma separated origins allowed to call with credentials |
+| `FRONTEND_URL` | default post sign in destination |
+| `GOOGLE_CLIENT_ID` | public by design, it appears in every OAuth redirect |
+| `COOKIE_DOMAIN` | optional; defaults to the apex of the request hostname |
+| `NODE_ENV`, `LOG_LEVEL` | |
+
+Secrets, via `wrangler secret put` or Doppler:
+
+| Name | Purpose |
+|---|---|
+| `BETTER_AUTH_SECRET` | signs session cookies; 32+ characters |
+| `GOOGLE_CLIENT_SECRET` | OAuth code exchange |
+
+The provider's Authorized redirect URI must be
+`{OAUTH_BASE_URL}/api/auth/callback/google`. A test pins this, because a
+mismatch fails every sign in and the fix lives in a console this repo cannot
+see.
+
+### Database
 
 ```bash
-# Run unit tests
-npm test
-
-# Run type checking
-npm run typecheck
-
-# Run linting
-npm run lint
+bun run db:schema         # regenerate the migration from the installed better-auth
+bun run db:migrate        # apply to remote D1
+bun run db:migrate:local  # apply to the local D1
 ```
 
-## Deployment
+Regenerate with `scripts/generate-auth-schema.mjs`, never with
+`@better-auth/cli generate`. The CLI bundles its own copy of the schema and has
+drifted behind the runtime: it omitted `account.issuer`, added in 1.7, which
+surfaces as a failed insert on first sign up rather than a failed migration.
+The script calls the installed library's own migration builder, so the DDL
+cannot disagree with the library in the worker.
 
-### Staging Deployment
+## Testing
 
 ```bash
-# Deploy to Cloudflare Workers staging
-npm run deploy:staging
+bun run test:unit
+bun run test:integration
 ```
 
-### Production Deployment
+Integration tests boot the real app from `src/index.ts` with its full
+middleware stack against real SQLite, rather than asserting against a mock
+defined in the test file.
+
+One gap worth knowing: the WebSocket upgrade is not exercised in CI. Node's
+fetch forbids constructing a 101 response and workerd requires one, so the test
+asserts the accept side effect and stops there. Hibernation, reconnect, and fan
+out across two browsers are only verified on a real deployment. Closing this
+properly means `@cloudflare/vitest-pool-workers`, which runs tests inside
+workerd.
+
+## Deploying
 
 ```bash
-# Deploy to Cloudflare Workers production
-npm run deploy:production
+bunx wrangler deploy --config config/wrangler.staging.toml   # staging first
+bunx wrangler deploy --config config/wrangler.toml           # production
 ```
 
-### KV Namespace Setup
+Staging is a separate worker on workers.dev with its own D1, reachable at
+`in8-auth-gateway-staging.notifyshantanu.workers.dev`. It exists because
+`wrangler versions upload`, the usual way to preview without taking traffic,
+is refused for any Worker carrying a Durable Object migration. Without a second
+worker there is no way to prove the migration applies, or to exercise the
+websocket path, before it reaches production.
 
-The auth service requires a KV namespace for session storage:
+Verify a deployment by opening `/demo` in two tabs and signing out of one.
 
-```bash
-# Create KV namespace (if not exists)
-wrangler kv:namespace create AUTH_STORE
+Rolling back across the Durable Object migration is not a single command: an
+earlier version without the `SessionHub` class needs a `deleted_classes`
+migration. Prefer a forward fix.
 
-# Bind in wrangler.toml
-[[kv_namespaces]]
-binding = "AUTH_STORE"
-id = "your-kv-namespace-id"
-```
-
-## Session Management
-
-### KV Storage Strategy
-
-Sessions are stored in Cloudflare KV with the following optimizations:
-- Environment-prefixed keys: `{env}:sessions:{sessionId}`
-- Encrypted session data
-- Automatic TTL based on session expiration
-- Rate-limited activity updates (5-minute intervals)
-
-### Convex Fallback
-
-When KV write limits are exceeded (1,000 writes/day on free tier):
-- Session creation falls back to Convex-only storage
-- Session reads attempt Convex when KV returns null
-- Activity updates continue to Convex for real-time sync
-- Session changes, including logout, propagate live to every open tab
-- No user-facing impact during fallback
-
-## Security Considerations
-
-1. **Secret Rotation**: Regularly rotate JWT_SECRET and SESSION_SECRET
-2. **OAuth Configuration**: Ensure correct redirect URIs in Google Console
-3. **CORS Settings**: Be specific with allowed origins in production
-4. **Cookie Security**: Always use HTTPS in production for secure cookies
-5. **Rate Limiting**: Adjust limits based on expected traffic patterns
-
-## Monitoring
-
-- **Cloudflare Analytics**: Monitor request patterns and errors
-- **KV Metrics**: Track storage usage and operation counts
-- **Worker Logs**: Use `wrangler tail` for real-time logs
-- **Convex Dashboard**: Monitor database operations and WebSocket connections
-
-## Troubleshooting
-
-### Common Issues
-
-1. **KV Limit Exceeded**
-   - Error: "KV put() limit exceeded for the day"
-   - Solution: Service automatically falls back to Convex
-   - Long-term: Consider upgrading KV plan
-
-2. **OAuth Redirect Errors**
-   - Verify OAUTH_BASE_URL matches deployment URL
-   - Check Google Console redirect URI configuration
-   - Ensure cookies are set with correct domain
-
-3. **Session Not Found**
-   - Check both KV and Convex for session data
-   - Verify cookie domain settings
-   - Confirm session hasn't expired
-
-### Debug Commands
-
-```bash
-# View real-time logs
-npm run logs
-
-# View only errors
-npm run logs:error
-
-# Test WebSocket connection (local)
-npm run test:websocket
-
-# Test WebSocket connection (production)
-npm run test:websocket:prod
-```
-
-## Architecture Decisions
-
-### Why Cloudflare Workers?
-- Global edge deployment for low latency
-- Built-in KV storage for sessions
-- Seamless integration with other Cloudflare services
-- Cost-effective for authentication workloads
-
-### Why Convex for Fallback?
-
-Convex is a **reactive** database: clients subscribe over WebSockets and are
-pushed updates the moment session data changes. That reactivity, not just its
-role as a backup, is the reason it was chosen:
-
-- **Live multi-tab session sync**: every tab subscribes to its session, so a
-  change propagates instantly. Sign out in one tab and all other open tabs log
-  out on their own, with no refresh and no polling. A plain key-value backup
-  could hold the session just as well, but could not give you this for free.
-- **Real-time WebSocket support**: no client-side polling for session state.
-- **Reliable backup when KV write limits are hit**: keeps the session layer
-  working past the free tier's ~1,000 writes/day cap.
-- **Built-in ReactQuery/hooks for the frontend**: query and subscribe to
-  session state directly.
-
-### Cookie Strategy
-- Two-cookie approach balances security and functionality
-- HTTP-only cookie prevents XSS attacks
-- Non-HTTP-only cookie allows JavaScript session checks
-- Cross-subdomain support for platform services
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Ensure all tests pass
-5. Submit a pull request
+Each environment needs `BETTER_AUTH_SECRET` and `GOOGLE_CLIENT_SECRET` set, and
+its own callback URL registered with the OAuth provider.
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT

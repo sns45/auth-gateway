@@ -1,690 +1,100 @@
 import { Hono } from 'hono';
-import { setCookie, deleteCookie } from 'hono/cookie';
 import { CloudflareEnv } from '@/types/auth';
 import { Variables } from '@/types/context';
-import { APIErrorCodes, AuthResponse } from '@/types/api';
-import { validateRequestBody, validateQueryParams, LoginRequestSchema, OAuthCallbackSchema } from '@/utils/validation';
-import { createJWT, createRefreshToken } from '@/utils/jwt';
-import { SessionService } from '@/services/session';
-import { ConvexService } from '@/services/convex';
-import { OAuthService } from '@/services/oauth';
-import { requireAuth, optionalAuth, collectCookieValues } from '@/middleware/auth';
-import { createRateLimitMiddleware } from '@/middleware/rate-limit';
-import { Logger } from '@/middleware/logging';
+import { createAuth } from '@/auth';
+import { publishSessionEvent } from '@/services/session-events';
 
 /**
- * Authentication Routes
+ * Better Auth owns every route under this mount.
+ *
+ * Deliberately a passthrough rather than a set of bespoke wrappers: a client
+ * site can point any Better Auth client at this origin and work with no
+ * gateway specific code, which is the whole point of the gateway existing.
+ * See /api/auth/reference for the generated spec.
+ *
+ * The one thing layered on top is live session sync. Requests that start or
+ * end a session publish an invalidation to the user's hub, so their other tabs
+ * find out without polling and without a reload.
  */
 export const authRoutes = new Hono<{ Bindings: CloudflareEnv; Variables: Variables }>();
 
-// Apply rate limiting to auth routes
-const authRateLimit = createRateLimitMiddleware({
-  customConfig: 'authentication',
-});
+/** Paths that end a session. Matched by suffix, since the mount adds a prefix. */
+const REVOCATION_PATHS = [
+  '/sign-out',
+  '/revoke-session',
+  '/revoke-sessions',
+  '/revoke-other-sessions',
+  '/delete-user',
+];
 
+/** Read the session cookies a response is setting, as a Cookie header. */
+function cookieHeaderFrom(response: Response): string | null {
+  // getSetCookie is present in workerd and in Node 18.14+, but is not in the
+  // @cloudflare/workers-types Headers surface yet.
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  const setCookies: string[] =
+    typeof headers.getSetCookie === 'function'
+      ? headers.getSetCookie()
+      : ([response.headers.get('set-cookie')].filter(Boolean) as string[]);
 
-/**
- * POST /auth/login - Email/Password Login
- */
-authRoutes.post('/login', authRateLimit, async (c) => {
-  const logger = c.get('logger') as Logger;
-  const requestId = c.get('requestId') || 'unknown';
-  
-  try {
-    // Validate request body
-    const validation = await validateRequestBody(c, LoginRequestSchema);
-    if (!validation.success) {
-      return c.json({
-        success: false,
-        error: validation.error,
-      }, 400);
-    }
+  const pairs = setCookies
+    .map((cookie: string) => cookie.split(';')[0].trim())
+    .filter((pair: string) => pair.includes('=') && !pair.endsWith('='));
 
-    const { email, password, rememberMe } = validation.data;
-    
-    // Initialize services
-    const convexService = new ConvexService(c.env, logger);
-    const sessionService = new SessionService(c.env, logger);
-    
-    // Authenticate with Convex
-    const user = await convexService.authenticateUser(email, password);
-    if (!user) {
-      logger.warn(`Login failed for ${email}`, { requestId, email });
-      return c.json({
-        success: false,
-        error: {
-          message: 'Invalid credentials',
-          code: APIErrorCodes.INVALID_CREDENTIALS,
-        }
-      }, 401);
-    }
+  return pairs.length ? pairs.join('; ') : null;
+}
 
-    // Get user permissions
-    const permissions = await convexService.getUserPermissions(user.id, user.role);
-    
-    // Create session
-    const ip = getClientIP(c);
-    const userAgent = c.req.header('user-agent') || 'unknown';
-    const { sessionId } = await sessionService.createSession(
-      user,
-      ip,
-      userAgent,
-      permissions
-    );
+authRoutes.all('*', async (c) => {
+  const auth = createAuth(c.env);
+  const path = new URL(c.req.url).pathname;
+  const isRevocation = REVOCATION_PATHS.some((suffix) => path.endsWith(suffix));
 
-    // Create JWT token
-    const tokenExpiry = rememberMe ? 7 * 24 * 3600 : 3600; // 7 days or 1 hour
-    const _token = await createJWT({
-      sub: user.id,
-      role: user.role,
-      permissions,
-      session_id: sessionId,
-    }, c.env.JWT_SECRET, tokenExpiry);
+  // Resolved before the handler runs, because afterwards the session is gone
+  // and there is no user left to address the hub with.
+  const revokedUserId = isRevocation
+    ? (await auth.api.getSession({ headers: c.req.raw.headers }))?.user.id
+    : undefined;
 
-    // Create refresh token
-    const _refreshToken = await createRefreshToken(
-      user.id,
-      sessionId,
-      c.env.JWT_SECRET,
-      rememberMe ? 30 * 24 * 3600 : 7 * 24 * 3600 // 30 days or 7 days
-    );
+  const response = await auth.handler(c.req.raw);
+  if (!response.ok) return response;
 
-    // Set session cookie
-    const cookieOptions = {
-      httpOnly: true,
-      secure: c.env.NODE_ENV === 'production',
-      sameSite: 'Strict' as const,
-      maxAge: rememberMe ? 7 * 24 * 3600 : 24 * 3600,
-      path: '/',
-    };
-
-    setCookie(c, c.env.SESSION_COOKIE_NAME || 'auth_session', sessionId, cookieOptions);
-
-    // Also set a non-httpOnly cookie for the session ID that JavaScript can read
-    const isProdOrStaging = c.env.NODE_ENV === 'production' || c.env.NODE_ENV === 'staging';
-    const loginCookieDomain = isProdOrStaging ? getCookieDomain(c) : undefined;
-    const cookieDomainStr = loginCookieDomain ? `; Domain=${loginCookieDomain}` : '';
-    c.header('Set-Cookie', `auth_session_id=${sessionId}; Path=/; Max-Age=${cookieOptions.maxAge}${cookieDomainStr}; SameSite=${cookieOptions.sameSite}${isProdOrStaging ? '; Secure' : ''}`, { append: true });
-
-    // Update last login
-    await convexService.updateLastLogin(user.id);
-
-    logger.info(`User logged in`, {
-      requestId, 
-      userId: user.id, 
-      email: user.email,
-      rememberMe: rememberMe 
-    });
-
-    const response: AuthResponse = {
-      success: true,
-      user,
-      expires_at: new Date(Date.now() + tokenExpiry * 1000).toISOString(),
-    };
-
-    return c.json(response);
-
-  } catch (error) {
-    logger.error(`Login error`, error);
-    return c.json({
-      success: false,
-      error: {
-        message: 'Authentication service error',
-        code: APIErrorCodes.INTERNAL_ERROR,
-      }
-    }, 500);
-  }
-});
-
-/**
- * GET /api/auth/signin/{provider} - OAuth Login Initiation (Better Auth pattern)
- */
-authRoutes.get('/signin/:provider', async (c) => {
-  const logger = c.get('logger') as Logger;
-  const provider = c.req.param('provider') as any;
-  const baseUrl = getBaseURL(c);
-  const redirectUri = c.req.query('redirect_uri') || `${baseUrl}/api/auth/callback/${provider}`;
-
-  // Optional ?redirect=/some/path returns the user to the page that initiated
-  // login. Validated to same-site absolute paths and carried through state.
-  const requestedRedirect = c.req.query('redirect') || '/';
-  const redirectPath =
-    requestedRedirect.length <= 512 && /^\/(?!\/)/.test(requestedRedirect)
-      ? requestedRedirect
-      : '/';
-
-  try {
-    const oauthService = new OAuthService(c.env);
-
-    if (!oauthService.isProviderSupported(provider)) {
-      return c.json({
-        success: false,
-        error: {
-          message: 'OAuth provider not supported',
-          code: APIErrorCodes.INVALID_PARAMETER,
-        }
-      }, 400);
-    }
-
-    const authUrl = oauthService.getAuthorizationUrl(provider, redirectUri, buildOAuthState(redirectPath));
-    if (!authUrl) {
-      return c.json({
-        success: false,
-        error: {
-          message: 'OAuth provider not configured',
-          code: APIErrorCodes.OAUTH_ERROR,
-        }
-      }, 500);
-    }
-
-    logger.info(`OAuth login initiated`, { 
-      provider, 
-      redirectUri, 
-      baseUrl,
-      configuredBaseUrl: c.env.OAUTH_BASE_URL || 'none' 
-    });
-    
-    return c.redirect(authUrl);
-
-  } catch (error) {
-    logger.error(`OAuth initiation error`, error);
-    return c.json({
-      success: false,
-      error: {
-        message: 'OAuth service error',
-        code: APIErrorCodes.OAUTH_ERROR,
-      }
-    }, 500);
-  }
-});
-
-/**
- * GET /api/auth/callback/{provider} - OAuth Callback
- */
-authRoutes.get('/callback/:provider', async (c) => {
-  const logger = c.get('logger') as Logger;
-  const provider = c.req.param('provider') as any;
-  const requestId = c.get('requestId') || 'unknown';
-  
-  try {
-    // Validate query parameters
-    const validation = validateQueryParams(c, OAuthCallbackSchema);
-    if (!validation.success) {
-      logger.error('OAuth callback validation failed', {
-        requestId,
-        provider,
-        error: validation.error,
-        query: c.req.query()
+  const announce = async () => {
+    if (revokedUserId) {
+      await publishSessionEvent(c.env, revokedUserId, {
+        type: 'session.changed',
+        reason: isRevocation && path.endsWith('/sign-out') ? 'signed-out' : 'revoked',
+        at: Date.now(),
       });
-      
-      const frontendUrl = getFrontendURL(c);
-      return c.redirect(`${frontendUrl}?auth=error&message=${encodeURIComponent('Invalid OAuth callback')}&provider=${provider}`);
+      return;
     }
 
-    const { code } = validation.data;
-    
-    // Initialize services
-    const oauthService = new OAuthService(c.env);
-    const convexService = new ConvexService(c.env, logger);
-    const sessionService = new SessionService(c.env, logger);
-    
-    // Exchange code for token
-    const baseUrl = getBaseURL(c);
-    const redirectUri = `${baseUrl}/api/auth/callback/${provider}`;
-    
-    logger.info(`OAuth callback processing`, { 
-      requestId,
-      provider, 
-      redirectUri, 
-      baseUrl,
-      hostname: new URL(c.req.url).hostname
+    // A response that sets cookies may be a fresh sign in. Ask who it belongs
+    // to using the cookies it just issued.
+    const cookie = cookieHeaderFrom(response);
+    if (!cookie) return;
+
+    const session = await auth.api.getSession({ headers: new Headers({ cookie }) });
+    if (!session) return;
+
+    await publishSessionEvent(c.env, session.user.id, {
+      type: 'session.changed',
+      reason: 'signed-in',
+      at: Date.now(),
     });
-    
-    const accessToken = await oauthService.exchangeCodeForToken(provider, code, redirectUri);
-    
-    if (!accessToken) {
-      logger.error('OAuth token exchange failed', {
-        requestId,
-        provider,
-        redirectUri
-      });
-      
-      const frontendUrl = getFrontendURL(c);
-      return c.redirect(`${frontendUrl}?auth=error&message=${encodeURIComponent('OAuth authentication failed')}&provider=${provider}&details=token_exchange_failed`);
+  };
+
+  // Never delay the user's response on fan out. In a test harness there is no
+  // execution context, so fall back to awaiting.
+  const ctx = (() => {
+    try {
+      return c.executionCtx;
+    } catch {
+      return undefined;
     }
+  })();
 
-    // Get user info from OAuth provider
-    let userInfo = await oauthService.getUserInfo(provider, accessToken);
-    if (!userInfo) {
-      logger.error('Failed to get user info', {
-        requestId,
-        provider
-      });
-      
-      const frontendUrl = getFrontendURL(c);
-      return c.redirect(`${frontendUrl}?auth=error&message=${encodeURIComponent('OAuth authentication failed')}&provider=${provider}&details=user_info_failed`);
-    }
+  if (ctx) ctx.waitUntil(announce());
+  else await announce();
 
-    if (!userInfo.email) {
-      logger.error('Email missing from OAuth response', {
-        requestId,
-        provider,
-        userInfo: { id: userInfo.id, name: userInfo.name }
-      });
-      
-      const frontendUrl = getFrontendURL(c);
-      return c.redirect(`${frontendUrl}?auth=error&message=${encodeURIComponent('Email address is required')}&provider=${provider}&details=email_missing`);
-    }
-
-    // Handle user in Convex (create or update)
-    const user = await convexService.handleOAuthUser(
-      provider,
-      userInfo.id,
-      userInfo.email,
-      userInfo.name,
-      userInfo.avatar_url
-    );
-
-    // Get user permissions
-    const permissions = await convexService.getUserPermissions(user.id, user.role);
-    
-    // Create session
-    const ip = getClientIP(c);
-    const userAgent = c.req.header('user-agent') || 'unknown';
-    const { sessionId } = await sessionService.createSession(
-      user,
-      ip,
-      userAgent,
-      permissions
-    );
-
-    // Set session cookie with proper domain handling
-    const isProduction = c.env.NODE_ENV === 'production';
-
-    // Apex-scoped cookie domain so sibling subdomains (the app) see the session
-    const cookieDomain = isProduction ? getCookieDomain(c) : undefined;
-
-    const cookieOptions = {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: 'lax' as const, // Changed from 'Strict' to 'lax' for OAuth flows
-      maxAge: 7 * 24 * 3600, // 7 days
-      path: '/',
-      domain: cookieDomain,
-    };
-
-    setCookie(c, c.env.SESSION_COOKIE_NAME || 'auth_session', sessionId, cookieOptions);
-
-    // Also set a non-httpOnly cookie for the session ID that JavaScript can read
-    // (used by the frontend's reactive Convex subscription for multi-tab sync)
-    const cookieDomainStr = cookieDomain ? `; Domain=${cookieDomain}` : '';
-    c.header('Set-Cookie', `auth_session_id=${sessionId}; Path=/; Max-Age=${cookieOptions.maxAge}${cookieDomainStr}; SameSite=${cookieOptions.sameSite}${isProduction ? '; Secure' : ''}`, { append: true });
-
-    // Update last login
-    await convexService.updateLastLogin(user.id);
-
-    logger.info(`OAuth login successful`, { 
-      requestId,
-      provider, 
-      userId: user.id, 
-      email: user.email 
-    });
-
-    // Redirect back to the page that initiated login (carried through state)
-    const frontendUrl = getFrontendURL(c);
-    const returnPath = parseStateRedirect(c.req.query('state'));
-    const sep = returnPath.includes('?') ? '&' : '?';
-    return c.redirect(`${frontendUrl}${returnPath}${sep}auth=success&provider=${provider}`);
-
-  } catch (error) {
-    logger.error(`OAuth callback error`, {
-      requestId,
-      provider,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
-    });
-    
-    // Redirect to frontend with error
-    const frontendUrl = getFrontendURL(c);
-    const errorMessage = error instanceof Error ? error.message : 'OAuth authentication failed';
-    return c.redirect(`${frontendUrl}?auth=error&message=${encodeURIComponent(errorMessage)}&provider=${provider}`);
-  }
+  return response;
 });
-
-/**
- * POST /auth/refresh - Refresh Token
- */
-authRoutes.post('/refresh', requireAuth, async (c) => {
-  const logger = c.get('logger') as Logger;
-  const authContext = c.get('auth');
-  
-  try {
-    const sessionService = new SessionService(c.env, logger);
-    const convexService = new ConvexService(c.env, logger);
-    
-    // Get current session
-    const _currentSession = authContext.session;
-    const user = authContext.user;
-    
-    // Update session activity
-    await sessionService.updateSessionActivity(authContext.session_id);
-    
-    // Get updated permissions
-    const permissions = await convexService.getUserPermissions(user.id, user.role);
-    
-    // Create new JWT token
-    const _token = await createJWT({
-      sub: user.id,
-      role: user.role,
-      permissions,
-      session_id: authContext.session_id,
-    }, c.env.JWT_SECRET, 3600); // 1 hour
-
-    logger.info(`Token refreshed`, { userId: user.id });
-
-    const response: AuthResponse = {
-      success: true,
-      user,
-      expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
-    };
-
-    return c.json(response);
-
-  } catch (error) {
-    logger.error(`Token refresh error`, error);
-    return c.json({
-      success: false,
-      error: {
-        message: 'Token refresh failed',
-        code: APIErrorCodes.TOKEN_INVALID,
-      }
-    }, 401);
-  }
-});
-
-/**
- * POST /auth/logout - Logout
- */
-authRoutes.post('/logout', optionalAuth, async (c) => {
-  const logger = c.get('logger') as Logger;
-  const authContext = c.get('auth');
-  
-  try {
-    // Delete every session id presented. Browsers can hold duplicate
-    // auth_session cookies (a stale host-only one shadowing the current
-    // domain-scoped one); each value is a bearer credential, so deleting all
-    // of them is both safe and what the user asked for.
-    const sessionService = new SessionService(c.env, logger);
-    const logoutCandidates = collectCookieValues(
-      c.req.header('cookie') || '',
-      c.env.SESSION_COOKIE_NAME || 'auth_session'
-    );
-    for (const sid of logoutCandidates) {
-      await sessionService.deleteSession(sid);
-    }
-    if (authContext) {
-      if (!logoutCandidates.includes(authContext.session_id)) {
-        await sessionService.deleteSession(authContext.session_id);
-      }
-      logger.info(`User logged out`, { userId: authContext.user.id });
-    }
-
-    // Clear session cookies with explicit Set-Cookie headers
-    const isProduction = c.env.NODE_ENV === 'production' || c.env.NODE_ENV === 'staging';
-
-    // Determine cookie domain based on the request hostname (matches set-time domain)
-    const clearDomain = isProduction ? getCookieDomain(c) : undefined;
-    const cookieDomain = clearDomain ? `; Domain=${clearDomain}` : '';
-
-    // Clear both cookies at both scopes: the domain-scoped pair set at login
-    // and any host-only leftovers from earlier deployments (a domain-scoped
-    // expiry cannot clear a host-only cookie).
-    const clearScopes = cookieDomain ? [cookieDomain, ''] : [''];
-    for (const scope of clearScopes) {
-      c.header('Set-Cookie', `auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${scope}; HttpOnly; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
-      c.header('Set-Cookie', `auth_session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${scope}; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
-    }
-
-    return c.json({ success: true });
-
-  } catch (error) {
-    logger.error(`Logout error`, error);
-    return c.json({ success: true }); // Always succeed logout
-  }
-});
-
-/**
- * POST /auth/signout - Sign Out (Better Auth compatible)
- */
-authRoutes.post('/signout', optionalAuth, async (c) => {
-  const logger = c.get('logger') as Logger;
-  const authContext = c.get('auth');
-  
-  try {
-    // Delete every session id presented (see /logout for the duplicate
-    // cookie rationale).
-    const sessionService = new SessionService(c.env, logger);
-    const signoutCandidates = collectCookieValues(
-      c.req.header('cookie') || '',
-      c.env.SESSION_COOKIE_NAME || 'auth_session'
-    );
-    for (const sid of signoutCandidates) {
-      await sessionService.deleteSession(sid);
-    }
-    if (authContext) {
-      if (!signoutCandidates.includes(authContext.session_id)) {
-        await sessionService.deleteSession(authContext.session_id);
-      }
-      logger.info(`User signed out`, { userId: authContext.user.id });
-    }
-
-    // Clear session cookies with explicit Set-Cookie headers
-    const isProduction = c.env.NODE_ENV === 'production' || c.env.NODE_ENV === 'staging';
-
-    // Determine cookie domain based on the request hostname (matches set-time domain)
-    const clearDomain = isProduction ? getCookieDomain(c) : undefined;
-    const cookieDomain = clearDomain ? `; Domain=${clearDomain}` : '';
-
-    // Clear both cookies at both scopes: the domain-scoped pair set at login
-    // and any host-only leftovers from earlier deployments (a domain-scoped
-    // expiry cannot clear a host-only cookie).
-    const clearScopes = cookieDomain ? [cookieDomain, ''] : [''];
-    for (const scope of clearScopes) {
-      c.header('Set-Cookie', `auth_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${scope}; HttpOnly; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
-      c.header('Set-Cookie', `auth_session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT${scope}; SameSite=Lax${isProduction ? '; Secure' : ''}`, { append: true });
-    }
-
-    return c.json({ success: true });
-
-  } catch (error) {
-    logger.error(`Sign out error`, error);
-    return c.json({ success: true }); // Always succeed logout
-  }
-});
-
-/**
- * GET /auth/me - Get Current User
- */
-authRoutes.get('/me', requireAuth, async (c) => {
-  const authContext = c.get('auth');
-  
-  return c.json({
-    success: true,
-    user: authContext.user,
-    session: {
-      id: authContext.session_id,
-      expiresAt: authContext.session.expires_at,
-    },
-    permissions: authContext.permissions,
-    session_expires_at: authContext.session.expires_at,
-  });
-});
-
-/**
- * GET /auth/session - Get Current Session (alias for /me)
- */
-authRoutes.get('/session', requireAuth, async (c) => {
-  const authContext = c.get('auth');
-  
-  return c.json({
-    success: true,
-    user: authContext.user,
-    session: {
-      id: authContext.session_id,
-      expiresAt: authContext.session.expires_at,
-    },
-    permissions: authContext.permissions,
-    session_expires_at: authContext.session.expires_at,
-  });
-});
-
-/**
- * GET /auth/get-session - Get Current Session Status (no auth required)
- */
-authRoutes.get('/get-session', optionalAuth, async (c) => {
-  const authContext = c.get('auth');
-  
-  // If no session, return 204 No Content
-  if (!authContext) {
-    return c.body(null, 204);
-  }
-  
-  return c.json({
-    success: true,
-    user: authContext.user,
-    session: {
-      id: authContext.session_id,
-      expiresAt: authContext.session.expires_at,
-    },
-  });
-});
-
-/**
- * GET /auth/providers - Get Available OAuth Providers
- */
-authRoutes.get('/providers', async (c) => {
-  const oauthService = new OAuthService(c.env);
-  const providers = oauthService.getAvailableProviders();
-  
-  return c.json({
-    success: true,
-    providers,
-  });
-});
-
-/**
- * Helper Functions
- */
-
-function getClientIP(c: any): string {
-  const headers = [
-    'cf-connecting-ip',
-    'x-forwarded-for',
-    'x-real-ip',
-    'x-client-ip',
-  ];
-
-  for (const header of headers) {
-    const value = c.req.header(header);
-    if (value) {
-      return value.split(',')[0].trim();
-    }
-  }
-
-  return c.req.header('remote-addr') || 'unknown';
-}
-
-function getBaseURL(c: any): string {
-  // In deployed environments the request hostname is authoritative, so a
-  // single worker serving several auth hostnames builds correct callbacks.
-  const hostname = new URL(c.req.url).hostname;
-  if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
-    return `https://${hostname}`;
-  }
-
-  // Use configured OAuth base URL if available (development)
-  if (c.env.OAUTH_BASE_URL) {
-    return c.env.OAUTH_BASE_URL;
-  }
-
-  // For development, use localhost with the appropriate port
-  const protocol = c.env.NODE_ENV === 'production' ? 'https' : 'http';
-  const host = c.req.header('host') || 'localhost:8787';
-  return `${protocol}://${host}`;
-}
-
-function getFrontendURL(c: any): string {
-  // Derive the app origin from the auth hostname: auth.<apex> -> https://<apex>
-  const hostname = new URL(c.req.url).hostname;
-  const match = hostname.match(/^auth(?:-staging)?\.(.+)$/);
-  if (match) {
-    return `https://${match[1]}`;
-  }
-
-  // Use configured frontend URL if available
-  if (c.env.FRONTEND_URL) {
-    return c.env.FRONTEND_URL;
-  }
-
-  // Fallback to allowed origins
-  if (c.env.ALLOWED_ORIGINS) {
-    const origins = c.env.ALLOWED_ORIGINS.split(',');
-    return origins[0] || 'http://localhost:5173';
-  }
-
-  // Development fallback
-  return 'http://localhost:5173';
-}
-
-/**
- * Cookie domain for session cookies. Derived from the request hostname so
- * the cookie lands on the apex domain and is visible to sibling subdomains
- * (auth.in8.sh sets Domain=.in8.sh, which in8.sh pages can read). COOKIE_DOMAIN
- * env overrides for setups where the heuristic is wrong.
- */
-function getCookieDomain(c: any): string | undefined {
-  if (c.env.COOKIE_DOMAIN) {
-    return c.env.COOKIE_DOMAIN;
-  }
-  const hostname = new URL(c.req.url).hostname;
-  if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return undefined;
-  }
-  const parts = hostname.split('.');
-  if (parts.length < 2) {
-    return undefined;
-  }
-  return '.' + parts.slice(-2).join('.');
-}
-
-/**
- * Extract and validate the post-login redirect path carried through OAuth
- * state. Only same-site absolute paths are accepted (no scheme, no
- * protocol-relative), preventing open redirects.
- */
-function parseStateRedirect(state?: string): string {
-  if (!state) {
-    return '/';
-  }
-  try {
-    const b64 = state.replace(/-/g, '+').replace(/_/g, '/');
-    const parsed = JSON.parse(atob(b64));
-    const r = parsed?.r;
-    if (typeof r === 'string' && r.length <= 512 && /^\/(?!\/)/.test(r)) {
-      return r;
-    }
-  } catch {
-    // Foreign or legacy state format; fall through to the default.
-  }
-  return '/';
-}
-
-/** Build the OAuth state parameter, embedding the validated redirect path. */
-function buildOAuthState(redirectPath: string): string {
-  const payload = JSON.stringify({
-    r: redirectPath,
-    t: Date.now(),
-    n: crypto.randomUUID(),
-  });
-  return btoa(payload).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}

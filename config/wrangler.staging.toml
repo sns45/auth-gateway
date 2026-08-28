@@ -1,0 +1,43 @@
+# Staging deployment on workers.dev.
+#
+# Exists because a Worker that introduces a Durable Object migration cannot be
+# previewed with `wrangler versions upload`: Cloudflare requires DO migrations
+# to be applied by a full deployment. Without a separate worker there is no way
+# to prove the migration applies, or to exercise the websocket path, before it
+# reaches auth.in8.sh.
+#
+# Its own D1, so nothing here can touch production sessions. No custom route,
+# so it is only reachable on its workers.dev hostname.
+name = "in8-auth-gateway-staging"
+main = "../dist/index.js"
+compatibility_date = "2024-10-21"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[d1_databases]]
+binding = "AUTH_DB"
+database_name = "in8-auth-sessions-staging"
+database_id = "76fb2878-f99c-44a3-8156-03268a59f754"
+
+migrations_dir = "../migrations"
+
+[[durable_objects.bindings]]
+name = "SESSION_HUB"
+class_name = "SessionHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionHub"]
+
+[[kv_namespaces]]
+binding = "AUTH_STORE"
+id = "3557a29a2c894326bd3422bfb9ae4e51"
+preview_id = "8c6d2c8b5d8f4e5486976b98d6765b1a"
+
+[vars]
+NODE_ENV = "production"
+ALLOWED_ORIGINS = "https://in8.sh,https://www.in8.sh,http://localhost:5173,https://in8-auth-gateway-staging.notifyshantanu.workers.dev"
+LOG_LEVEL = "debug"
+GOOGLE_CLIENT_ID = "428616692025-tmncbvvk4k6lob3q185el3dv88v0i0j8.apps.googleusercontent.com"
+FRONTEND_URL = "https://in8.sh"
+OAUTH_BASE_URL = "https://in8-auth-gateway-staging.notifyshantanu.workers.dev"

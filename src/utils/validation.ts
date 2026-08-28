@@ -21,15 +21,10 @@ export const URLSchema = z.string()
 
 // Environment validation schema
 export const EnvironmentSchema = z.object({
-  // AUTH_STORE will be provided by Cloudflare Workers runtime
+  // AUTH_STORE and AUTH_DB are provided by the Cloudflare Workers runtime
   NODE_ENV: z.enum(['development', 'staging', 'production']).default('development'),
   PORT: z.union([z.string().regex(/^\d+$/).transform(Number), z.number()]).optional().default(8787),
-  JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
-  SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
   BETTER_AUTH_SECRET: z.string().min(32, 'BETTER_AUTH_SECRET must be at least 32 characters'),
-  CONVEX_URL: URLSchema,
-  CONVEX_SITE_URL: URLSchema,
-  CONVEX_DEPLOY_KEY: z.string().min(1, 'CONVEX_DEPLOY_KEY is required'),
   ALLOWED_ORIGINS: z.string().min(1, 'ALLOWED_ORIGINS is required'),
   FRONTEND_URL: URLSchema.optional().default('http://localhost:3000'),
   OAUTH_BASE_URL: URLSchema.optional(),
@@ -39,12 +34,13 @@ export const EnvironmentSchema = z.object({
   RATE_LIMIT_MAX: z.union([z.string().regex(/^\d+$/).transform(Number), z.number()]).optional().default(100),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   KV_NAMESPACE_ID: z.string().optional(),
-  SESSION_COOKIE_NAME: z.string().optional().default('auth_session'),
-  SESSION_TIMEOUT: z.union([z.string().regex(/^\d+$/).transform(Number), z.number()]).optional().default(3600),
+  COOKIE_DOMAIN: z.string().optional(),
 }).transform((data) => ({
   ...data,
-  // Add AUTH_STORE as a placeholder - it will be provided by Cloudflare runtime
-  AUTH_STORE: undefined as any as KVNamespace
+  // Placeholders - the real bindings come from the Cloudflare runtime
+  AUTH_STORE: undefined as any as KVNamespace,
+  AUTH_DB: undefined as any as D1Database,
+  SESSION_HUB: undefined as any as DurableObjectNamespace
 }));
 
 // OAuth provider validation

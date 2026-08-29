@@ -6,6 +6,25 @@ import { AppContext } from '@/types/context';
 /**
  * Rate Limiting Middleware using Cloudflare KV for distributed rate limiting
  */
+/**
+ * Whether a request carries something that looks like a session.
+ *
+ * Used only to pick a rate limit bucket, never to authenticate. Presence is
+ * trivially spoofable and buys nothing but the larger bucket, since an invalid
+ * session still fails auth downstream.
+ *
+ * The cookie name has to track Better Auth's. This looked for `auth_session`,
+ * the name the previous hand rolled gateway used, long after the cookie became
+ * `better-auth.session_token`. The match never fired, so every signed in
+ * request was budgeted as anonymous, 10 requests per window instead of 100,
+ * and keyed by IP rather than by user. Matching the bare name also covers the
+ * `__Secure-` prefixed form used when cookies are secure.
+ */
+export function presentsSessionCredentials(headers: Headers): boolean {
+  if (headers.get('authorization')) return true;
+  return (headers.get('cookie') ?? '').includes('better-auth.session_token');
+}
+
 export class RateLimitService {
   private kv: KVNamespace;
   private configs: Map<string, RateLimitConfig>;
@@ -173,13 +192,8 @@ export class RateLimitService {
         // budgeting (presence is spoofable, but it only buys the larger
         // bucket, and invalid sessions still fail auth downstream).
         let configKey = customConfig || this.getRateLimitConfig(authContext);
-        if (configKey === 'anonymous') {
-          const hasSessionCredentials =
-            !!c.req.header('authorization') ||
-            (c.req.header('cookie') || '').includes('auth_session');
-          if (hasSessionCredentials) {
-            configKey = 'authenticated';
-          }
+        if (configKey === 'anonymous' && presentsSessionCredentials(c.req.raw.headers)) {
+          configKey = 'authenticated';
         }
         
         // Generate identifier

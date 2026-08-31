@@ -1,5 +1,5 @@
 import { Context } from 'hono';
-import { CloudflareEnv, AuthContext, SessionData, UserProfile } from './auth';
+import { CloudflareEnv } from './auth';
 import { Logger } from '@/middleware/logging';
 import { RateLimitStatus } from './auth';
 
@@ -7,12 +7,11 @@ import { RateLimitStatus } from './auth';
  * Extended Hono Context Variables
  */
 export interface Variables {
-  // Authentication
-  auth: AuthContext;
-  user: UserProfile;
-  session: SessionData;
-  permissions: string[];
-  
+  // No authentication variables. The gateway resolves a session through Better
+  // Auth per request and hands it to the caller; nothing is stashed on the
+  // context, so nothing here should imply an authenticated identity is
+  // available to middleware.
+
   // Request tracking
   requestId: string;
   logger: Logger;
@@ -55,15 +54,3 @@ export type AppContext = Context<{
   Bindings: CloudflareEnv;
   Variables: Variables;
 }>;
-
-/**
- * Type guard for auth context
- */
-export function hasAuthContext(c: AppContext): boolean {
-  try {
-    const auth = c.get('auth');
-    return auth !== undefined && auth !== null;
-  } catch {
-    return false;
-  }
-}

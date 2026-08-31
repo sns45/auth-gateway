@@ -1,49 +1,5 @@
 import { z } from 'zod';
 
-// User Profile Types
-export interface UserProfile {
-  id: string;
-  email: string;
-  name: string;
-  avatar_url?: string;
-  role: 'admin' | 'user' | 'guest';
-  created_at: string;
-  last_login: string;
-}
-
-// Session Types
-export interface SessionData {
-  user_id: string;
-  user_role: string;
-  permissions: string[];
-  ip_address: string;
-  user_agent: string;
-  created_at: string;
-  expires_at: string;
-  last_activity: string;
-}
-
-// JWT Payload
-export interface JWTPayload {
-  sub: string; // user_id
-  role: string;
-  permissions: string[];
-  session_id: string;
-  iat: number;
-  exp: number;
-  iss: string;
-  aud: string;
-}
-
-// Request Context
-export interface AuthContext {
-  user: UserProfile;
-  session: SessionData;
-  session_id: string;
-  permissions: string[];
-  token?: string; // JWT token if available
-}
-
 // OAuth Provider Types
 export type OAuthProvider = 'google';
 
@@ -75,7 +31,6 @@ export const OAuthCallbackSchema = z.object({
 // Response Types
 export interface AuthResponse {
   success: boolean;
-  user?: UserProfile;
   expires_at?: string;
   message?: string;
   code?: string;
@@ -160,7 +115,6 @@ export interface CloudflareEnv {
 // Hono Context Type Extension
 export interface HonoContext {
   env: CloudflareEnv;
-  auth?: AuthContext;
   rate_limit?: RateLimitStatus;
   request_id: string;
 }

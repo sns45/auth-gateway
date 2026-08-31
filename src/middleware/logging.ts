@@ -1,5 +1,4 @@
 import { Next } from 'hono';
-import { AuthContext } from '@/types/auth';
 import { RequestMetrics } from '@/types/api';
 import { AppContext } from '@/types/context';
 
@@ -115,15 +114,12 @@ export function createLoggingMiddleware() {
       // Log request completion
       const duration = Date.now() - start;
       const status = c.res.status;
-      const authContext = c.get('auth') as AuthContext;
-      
       const metrics: RequestMetrics = {
         request_id: requestId,
         method,
         path,
         status_code: status,
         duration_ms: duration,
-        user_id: authContext?.user.id,
         ip_address: ip,
         user_agent: userAgent,
         timestamp: new Date().toISOString(),
@@ -192,7 +188,6 @@ export function createSecurityLoggingMiddleware() {
     next = async () => {
       await originalNext();
       
-      const authContext = c.get('auth') as AuthContext;
       const status = c.res.status;
 
       // Log failed authentication
@@ -205,25 +200,12 @@ export function createSecurityLoggingMiddleware() {
         });
       }
 
-      // Log successful authentication
-      if (status === 200 && path === '/auth/login' && authContext) {
-        logger.info('User logged in', {
-          userId: authContext.user.id,
-          userRole: authContext.user.role,
-          ip,
-          userAgent,
-          requestId,
-        });
-      }
-
-      // Log logout
-      if (status === 200 && path === '/auth/logout') {
-        logger.info('User logged out', {
-          userId: authContext?.user.id,
-          ip,
-          userAgent,
-          requestId,
-        });
+      // Sign in and sign out are Better Auth's routes now, and this middleware
+      // has no way to name the user: nothing populates an auth context, so the
+      // identity fields these lines used to log were always undefined. Left as
+      // path and status only rather than pretending.
+      if (status === 200 && (path.endsWith('/sign-out') || path.endsWith('/callback/google'))) {
+        logger.info('Session event', { path, ip, userAgent, requestId });
       }
     };
 
@@ -246,15 +228,12 @@ export function createAuditLoggingMiddleware() {
       return;
     }
 
-    const authContext = c.get('auth') as AuthContext;
     const requestId = c.get('requestId') || 'unknown';
     const ip = getClientIP(c);
 
     // Log the action
     logger.info('Audit log', {
       action: `${method} ${path}`,
-      userId: authContext?.user.id,
-      userRole: authContext?.user.role,
       ip,
       requestId,
       timestamp: new Date().toISOString(),
@@ -267,14 +246,12 @@ export function createAuditLoggingMiddleware() {
     if (status >= 200 && status < 300) {
       logger.info('Audit log - success', {
         action: `${method} ${path}`,
-        userId: authContext?.user.id,
         status,
         requestId,
       });
     } else if (status >= 400) {
       logger.warn('Audit log - failed', {
         action: `${method} ${path}`,
-        userId: authContext?.user.id,
         status,
         requestId,
       });
@@ -292,7 +269,6 @@ export function createErrorLoggingMiddleware() {
     } catch (error) {
       const logger = c.get('logger') as Logger;
       const requestId = c.get('requestId') || 'unknown';
-      const authContext = c.get('auth') as AuthContext;
 
       logger.error('Unhandled error', {
         error: error instanceof Error ? {
@@ -301,7 +277,6 @@ export function createErrorLoggingMiddleware() {
           stack: error.stack,
         } : error,
         requestId,
-        userId: authContext?.user.id,
         path: c.req.path,
         method: c.req.method,
       });

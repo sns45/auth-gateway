@@ -1,5 +1,5 @@
 import { Next } from 'hono';
-import { CloudflareEnv, AuthContext, RateLimitConfig, RateLimitStatus } from '@/types/auth';
+import { CloudflareEnv, RateLimitConfig, RateLimitStatus } from '@/types/auth';
 import { APIErrorCodes } from '@/types/api';
 import { AppContext } from '@/types/context';
 
@@ -145,22 +145,6 @@ export class RateLimitService {
     }
   }
 
-  /**
-   * Get rate limit configuration for user type
-   */
-  private getRateLimitConfig(authContext?: AuthContext): string {
-    if (!authContext) {
-      return 'anonymous';
-    }
-
-    // Check for premium users (example logic)
-    if (authContext.user.role === 'admin' || 
-        authContext.permissions.includes('premium')) {
-      return 'premium';
-    }
-
-    return 'authenticated';
-  }
 
   /**
    * Create rate limiting middleware
@@ -183,7 +167,6 @@ export class RateLimitService {
       }
 
       try {
-        const authContext = c.get('auth') as AuthContext;
         const ip = this.getClientIP(c);
 
         // Determine rate limit configuration. This middleware runs before
@@ -191,7 +174,7 @@ export class RateLimitService {
         // requests that present session credentials as authenticated for
         // budgeting (presence is spoofable, but it only buys the larger
         // bucket, and invalid sessions still fail auth downstream).
-        let configKey = customConfig || this.getRateLimitConfig(authContext);
+        let configKey = customConfig || 'anonymous';
         if (configKey === 'anonymous' && presentsSessionCredentials(c.req.raw.headers)) {
           configKey = 'authenticated';
         }
@@ -200,8 +183,6 @@ export class RateLimitService {
         let identifier: string;
         if (keyGenerator) {
           identifier = keyGenerator(c);
-        } else if (authContext && configKey !== 'anonymous') {
-          identifier = authContext.user.id;
         } else {
           identifier = ip;
         }

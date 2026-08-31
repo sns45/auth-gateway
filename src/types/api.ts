@@ -107,18 +107,7 @@ export const RequestIdSchema = z.object({
   id: z.string().uuid(),
 });
 
-// Headers that should be forwarded to Convex
-export const CONVEX_FORWARD_HEADERS = [
-  'X-User-ID',
-  'X-User-Role',
-  'X-User-Permissions',
-  'X-Session-ID',
-  'X-Request-ID',
-  'Authorization',
-  'Content-Type',
-  'Accept',
-  'User-Agent',
-] as const;
+// (Convex forwarding headers removed: the proxy they served was deleted.)as const;
 
 // Headers that should be removed before forwarding
 export const REMOVE_HEADERS = [

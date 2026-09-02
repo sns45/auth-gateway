@@ -1,11 +1,11 @@
 /**
  * Emit the Better Auth D1 schema from the *installed* better-auth version.
  *
- * `@better-auth/cli generate` is bundled with its own copy of the schema and
- * drifted behind the runtime (it omitted account.issuer, added in 1.7), which
- * fails at insert time rather than at migrate time. This calls the installed
- * library's own migration builder, so the DDL can never disagree with the
- * library actually running in the worker.
+ * This calls the installed library's own migration builder, so the DDL can never
+ * disagree with the library actually running in the worker. A CLI is a separate
+ * artifact with its own release cadence: the current one (`auth`) tracks the
+ * runtime, but the older `@better-auth/cli` is deprecated at 1.4.21 and emits a
+ * pre-1.7 schema with no account.issuer column.
  *
  *   node scripts/generate-auth-schema.mjs > migrations/0001_better_auth.sql
  *

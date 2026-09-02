@@ -150,12 +150,12 @@ bun run db:migrate        # apply to remote D1
 bun run db:migrate:local  # apply to the local D1
 ```
 
-Regenerate with `scripts/generate-auth-schema.mjs`, never with
-`@better-auth/cli generate`. The CLI bundles its own copy of the schema and has
-drifted behind the runtime: it omitted `account.issuer`, added in 1.7, which
-surfaces as a failed insert on first sign up rather than a failed migration.
-The script calls the installed library's own migration builder, so the DDL
-cannot disagree with the library in the worker.
+Regenerate with `scripts/generate-auth-schema.mjs`. It calls the installed
+library's own migration builder, so the DDL cannot disagree with the library
+running in the worker. Better Auth's CLI (`npx auth@latest generate`) also
+works and tracks the runtime; the script simply removes the version question
+entirely. Do not use the older `@better-auth/cli`, which is deprecated and
+frozen at 1.4.21, and emits a pre-1.7 schema with no `account.issuer` column.
 
 ## Testing
 

@@ -1,9 +1,11 @@
 -- Better Auth core schema on D1.
 --
 -- Generated: node scripts/generate-auth-schema.mjs > migrations/0001_better_auth.sql
--- Regenerate rather than hand editing. Do NOT use `@better-auth/cli generate`:
--- it bundles its own copy of the schema and drifted behind the runtime,
--- omitting account.issuer, which fails at insert time instead of migrate time.
+-- Regenerate rather than hand editing. It is produced from the installed
+-- better-auth, so the DDL cannot disagree with the library running in the
+-- worker. A CLI is a separate artifact with its own version; the current one
+-- (`auth`) tracks the runtime, while the older `@better-auth/cli` is
+-- deprecated and frozen at 1.4.21.
 --
 -- Sessions live here and nowhere else. D1 sends every query to the primary
 -- instance unless the Sessions API (`withSession`) is used, so deleting a

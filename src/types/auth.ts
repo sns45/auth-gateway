@@ -77,10 +77,6 @@ export interface CloudflareEnv {
   // KV, now only for rate limit counters
   AUTH_STORE: KVNamespace;
 
-  // One Durable Object per user, fanning session changes out to that user's
-  // open tabs across every device.
-  SESSION_HUB: DurableObjectNamespace;
-  
   // Secrets (from Doppler or wrangler secret)
   BETTER_AUTH_SECRET: string;
   GOOGLE_CLIENT_SECRET?: string;

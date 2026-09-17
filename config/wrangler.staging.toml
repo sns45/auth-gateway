@@ -1,10 +1,10 @@
 # Staging deployment on workers.dev.
 #
-# Exists because a Worker that introduces a Durable Object migration cannot be
-# previewed with `wrangler versions upload`: Cloudflare requires DO migrations
-# to be applied by a full deployment. Without a separate worker there is no way
-# to prove the migration applies, or to exercise the websocket path, before it
-# reaches auth.in8.sh.
+# It exists so a real sign in, against a real D1, can be exercised end to end
+# before anything reaches auth.in8.sh. `wrangler versions upload` is available
+# again now that no Durable Object migration is declared, but it previews the
+# code alone; it does not prove a migrated database and a live OAuth callback
+# work together, which is what this worker is for.
 #
 # Its own D1, so nothing here can touch production sessions. No custom route,
 # so it is only reachable on its workers.dev hostname.
@@ -21,13 +21,9 @@ database_id = "76fb2878-f99c-44a3-8156-03268a59f754"
 
 migrations_dir = "../migrations"
 
-[[durable_objects.bindings]]
-name = "SESSION_HUB"
-class_name = "SessionHub"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["SessionHub"]
+# No Durable Object, deliberately: they require Workers Paid and this runs on
+# the free plan. Staging must stay on the same plan as production, or it stops
+# proving anything about it.
 
 [[kv_namespaces]]
 binding = "AUTH_STORE"

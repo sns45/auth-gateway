@@ -21,10 +21,13 @@ interface Call {
 
 let calls: Call[];
 let fakeWindow: any;
+/** Repeating timers the script registers, so the poll can be driven by hand. */
+let timers: { fn: () => void; delay: number }[];
 
 /** Run the client script against a stubbed browser and hand back its api. */
 async function boot(sessionResponse: unknown = null) {
   calls = [];
+  timers = [];
 
   const listeners: Record<string, ((e: any) => void)[]> = {};
   fakeWindow = {
@@ -54,10 +57,14 @@ async function boot(sessionResponse: unknown = null) {
     URL,
     Response,
     BroadcastChannel: undefined,
-    WebSocket: class {
-      readyState = 0;
-      close() {}
+    // Deliberately no WebSocket. The script must not reach for one again: the
+    // Durable Object it used to connect to required a paid plan, and an
+    // attempt here throws rather than silently degrading to the poll.
+    setInterval: (fn: () => void, delay: number) => {
+      timers.push({ fn, delay });
+      return timers.length;
     },
+    clearInterval: () => {},
     setTimeout,
     Math,
     JSON,
@@ -124,6 +131,33 @@ describe('signing in', () => {
       provider: 'google',
       callbackURL: 'https://app.example.com/work',
     });
+  });
+});
+
+describe('staying in sync by polling', () => {
+  test('registers exactly one repeating session check, at the named interval', async () => {
+    await boot(null);
+    expect(timers).toHaveLength(1);
+    // Mirrors SESSION_POLL_INTERVAL_MS in the script. If that value moves, the
+    // free tier arithmetic in the README moves with it, so pin it here.
+    expect(timers[0].delay).toBe(30000);
+  });
+
+  test('a tick re-reads the session', async () => {
+    await boot(null);
+    calls.length = 0;
+
+    timers[0].fn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(find('/get-session')).toBeDefined();
+  });
+
+  test('carries no trace of the removed live channel', async () => {
+    expect(BROWSER_CLIENT_JS).not.toContain('WebSocket');
+    expect(BROWSER_CLIENT_JS).not.toContain('session-stream');
+    // And it still boots in a browser that has no WebSocket at all.
+    expect(await boot(null)).toBeDefined();
   });
 });
 

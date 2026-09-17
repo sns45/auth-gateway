@@ -19,16 +19,11 @@ database_id = "32ee5de4-75b2-4b6f-9a78-f012b538cb7a"
 
 migrations_dir = "../migrations"
 
-# Live session sync. One Durable Object per user fans a session change out to
-# that user's open tabs on every device. SQLite backed because that is the
-# variant available on the Workers Free plan; the legacy KV backed one is not.
-[[durable_objects.bindings]]
-name = "SESSION_HUB"
-class_name = "SessionHub"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["SessionHub"]
+# No Durable Object is declared here, and none should be added. A Durable
+# Object requires Workers Paid, and this deployment runs on the free plan. Live
+# session sync used to be one per user, pushing an invalidation to that user's
+# open tabs; clients re-read get-session on a timer instead. D1 remains the
+# authority, so revocation is still immediate for anything that asks.
 
 # KV: rate limit counters only. Not sessions - KV's eventual consistency is
 # incompatible with immediate revocation. OAuth state is Better Auth's now.

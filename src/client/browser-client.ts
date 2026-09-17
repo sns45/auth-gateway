@@ -11,13 +11,18 @@
  *
  *   BroadcastChannel  same origin tabs, instant, works while signed out, so
  *                     it is what makes a sign in appear in the other tabs
- *   WebSocket to hub  cross device, the only way a revocation somewhere else
- *                     reaches an idle tab; needs a session to address the hub,
- *                     which is why it cannot cover sign in
- *   visibilitychange  backstop for anything missed while the tab was hidden
+ *   poll on a timer   cross device, the only way a revocation somewhere else
+ *                     reaches a tab the user is not touching; see
+ *                     SESSION_POLL_INTERVAL_MS below for the trade off
+ *   visibilitychange  a tab the user comes back to corrects at once, without
+ *                     waiting for the next tick
  *
- * Events from the hub are invalidation signals, never state, so every path
- * ends in the same place: refetch get-session and trust the answer.
+ * This used to hold a WebSocket to a per user Durable Object, which pushed the
+ * same invalidation in under a second. Durable Objects require Workers Paid,
+ * and the gateway runs on the free plan, so the push became a pull. What did
+ * not change is that no session state ever crosses the wire: every path ends
+ * in the same place, refetch get-session and trust the answer, so a sign out on
+ * one device still cannot sign the others out.
  *
  * Written without template literals so it can live in one here.
  */
@@ -29,10 +34,18 @@ export const BROWSER_CLIENT_JS = `(function () {
   var base = origin + '/api/auth';
   var CHANNEL = 'auth-gateway';
 
+  // How long a revoked session can still look live in a tab nobody is
+  // touching. Shorter spends more of the Workers free tier daily request
+  // budget, which one continuously visible tab draws on at 86400 / this many
+  // seconds per day; longer leaves a stale session on screen for longer. A tab
+  // the user returns to does not wait for it: visibilitychange refetches at
+  // once. Revocation itself is still immediate, because D1 is the authority
+  // and every request re-reads it; this only bounds how long an idle tab takes
+  // to notice.
+  var SESSION_POLL_INTERVAL_MS = 30000;
+
   var listeners = [];
   var session = undefined;
-  var socket = null;
-  var retry = 0;
   var closed = false;
   var channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(CHANNEL) : null;
 
@@ -58,36 +71,9 @@ export const BROWSER_CLIENT_JS = `(function () {
       .then(function (next) {
         var changed = session === undefined || !sameSession(session, next);
         session = next || null;
-        if (changed) { emit(); connect(); }
+        if (changed) emit();
         return session;
       });
-  }
-
-  // Only an authenticated tab can open the hub connection: it is addressed by
-  // user id, which the gateway resolves from the session cookie.
-  function connect() {
-    if (!session) { disconnect(); return; }
-    if (socket && (socket.readyState === 0 || socket.readyState === 1)) return;
-
-    var url = origin.replace(/^http/, 'ws') + '/api/auth/session-stream';
-    try { socket = new WebSocket(url); } catch (error) { return; }
-
-    socket.onopen = function () { retry = 0; };
-    socket.onmessage = function (event) { if (event.data !== 'pong') refresh(); };
-    socket.onclose = function () {
-      socket = null;
-      if (closed || !session) return;
-      retry = Math.min(retry + 1, 6);
-      setTimeout(connect, Math.pow(2, retry) * 250 + Math.random() * 250);
-    };
-    socket.onerror = function () { if (socket) socket.close(); };
-  }
-
-  function disconnect() {
-    if (!socket) return;
-    var open = socket;
-    socket = null;
-    try { open.close(1000); } catch (error) { /* already gone */ }
   }
 
   function announce() {
@@ -100,7 +86,18 @@ export const BROWSER_CLIENT_JS = `(function () {
     if (document.visibilityState === 'visible') refresh();
   });
 
-  window.addEventListener('pagehide', function () { closed = true; disconnect(); });
+  // Only a visible tab polls. A hidden one is not being read, and it refetches
+  // the moment it is shown again, so ticking in the background would spend the
+  // request budget to correct a screen nobody is looking at.
+  var poll = setInterval(function () {
+    if (closed) return;
+    if (document.visibilityState === 'visible') refresh();
+  }, SESSION_POLL_INTERVAL_MS);
+
+  window.addEventListener('pagehide', function () {
+    closed = true;
+    clearInterval(poll);
+  });
 
   var api = {
     /** Current session, or null. Undefined until the first fetch resolves. */

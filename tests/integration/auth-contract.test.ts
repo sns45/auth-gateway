@@ -26,20 +26,22 @@ const ORIGIN = 'https://app.example.com';
 const GATEWAY = 'https://auth.example.com';
 const SECRET = 'integration-secret-at-least-32-characters';
 
-/** Publishes the app makes to a user's hub, so fan out can be asserted. */
-let published: { userId: string; event: any }[] = [];
+const EMAIL = 'someone@example.com';
+const PASSWORD = 'correct-horse-battery-staple';
 
-function hubStub() {
-  return {
-    idFromName: (name: string) => ({ name, toString: () => name }),
-    get: (id: any) => ({
-      fetch: async (_url: string, init: any) => {
-        published.push({ userId: id.name, event: JSON.parse(init.body) });
-        return Response.json({ delivered: 1 });
-      },
-    }),
-  };
-}
+const sideDoor = (db: any) =>
+  betterAuth({
+    database: db,
+    baseURL: GATEWAY,
+    secret: SECRET,
+    emailAndPassword: { enabled: true },
+  });
+
+const cookieFrom = (response: Response) =>
+  (response.headers.get('set-cookie') ?? '')
+    .split(/,(?=[^;]+=[^;]+)/)
+    .map((c) => c.split(';')[0].trim())
+    .join('; ');
 
 /**
  * Mint a real session against the same database and secret the app uses, so
@@ -47,21 +49,22 @@ function hubStub() {
  * only enabled on this side instance; the gateway itself stays OAuth only.
  */
 async function createSessionCookie(db: any): Promise<string> {
-  const sideDoor = betterAuth({
-    database: db,
-    baseURL: GATEWAY,
-    secret: SECRET,
-    emailAndPassword: { enabled: true },
-  });
-  const response = await sideDoor.api.signUpEmail({
-    body: { email: 'someone@example.com', password: 'correct-horse-battery-staple', name: 'Someone' },
-    asResponse: true,
-  });
-  const setCookie = response.headers.get('set-cookie') ?? '';
-  return setCookie
-    .split(/,(?=[^;]+=[^;]+)/)
-    .map((c) => c.split(';')[0].trim())
-    .join('; ');
+  return cookieFrom(
+    await sideDoor(db).api.signUpEmail({
+      body: { email: EMAIL, password: PASSWORD, name: 'Someone' },
+      asResponse: true,
+    })
+  );
+}
+
+/** A second session for the same user, standing in for another device. */
+async function createSecondSessionCookie(db: any): Promise<string> {
+  return cookieFrom(
+    await sideDoor(db).api.signInEmail({
+      body: { email: EMAIL, password: PASSWORD },
+      asResponse: true,
+    })
+  );
 }
 
 let db: any;
@@ -84,7 +87,6 @@ beforeEach(() => {
     AUTH_STORE: kvStub(),
     NODE_ENV: 'production',
     BETTER_AUTH_SECRET: SECRET,
-    SESSION_HUB: hubStub(),
     ALLOWED_ORIGINS: ORIGIN,
     OAUTH_BASE_URL: GATEWAY,
     FRONTEND_URL: ORIGIN,
@@ -96,7 +98,6 @@ beforeEach(() => {
 
 afterEach(() => {
   db.close();
-  published = [];
 });
 
 describe('health', () => {
@@ -231,116 +232,73 @@ describe('drop in client', () => {
   });
 });
 
-describe('live session channel', () => {
-  test('refuses a cross site origin before it can hijack the channel', async () => {
-    // A websocket handshake is exempt from the same origin policy and still
-    // carries cookies, so without this check any page could open a channel to
-    // a signed in visitor's hub. SameSite=Lax blocks it today only because the
-    // gateway and its sites share a registrable domain; this must not depend
-    // on that.
-    const res = await app.request(
-      `${GATEWAY}/api/auth/session-stream`,
-      { headers: { origin: 'https://evil.example', upgrade: 'websocket' } },
-      env
-    );
-    expect(res.status).toBe(403);
-  });
+describe('no live session channel', () => {
+  // The websocket endpoint and the per user Durable Object behind it are gone,
+  // because a Durable Object requires Workers Paid. These pin that the path is
+  // not quietly still served by something else, and that the app needs no
+  // Durable Object binding to boot.
 
-  test('refuses a handshake that sends no origin at all', async () => {
-    // Browsers always send Origin on a websocket handshake, and this endpoint
-    // has no non browser caller, so absent means hand crafted.
-    const res = await app.request(
-      `${GATEWAY}/api/auth/session-stream`,
-      { headers: { upgrade: 'websocket' } },
-      env
-    );
-    expect(res.status).toBe(403);
-  });
-
-  test('the origin gate is checked before the session is looked up', async () => {
-    // A hostile caller should not cost a database query.
-    let queried = false;
-    const watched = {
-      ...db,
-      prepare: (sql: string) => {
-        queried = true;
-        return (db as any).prepare(sql);
-      },
-    };
-    await app.request(
-      `${GATEWAY}/api/auth/session-stream`,
-      { headers: { origin: 'https://evil.example', upgrade: 'websocket' } },
-      { ...env, AUTH_DB: watched }
-    );
-    expect(queried).toBe(false);
-  });
-
-  test('refuses a caller with no session, upgrade header or not', async () => {
-    // Checked before the upgrade so the answer does not depend on the Upgrade
-    // header surviving: workerd drops it on a non conforming handshake, which
-    // turned this into a 426 on the first staging deploy.
-    for (const extra of [{ upgrade: 'websocket' }, {}]) {
-      const res = await app.request(
-        `${GATEWAY}/api/auth/session-stream`,
-        { headers: { origin: ORIGIN, ...extra } },
-        env
-      );
-      expect(res.status).toBe(401);
-    }
-  });
-
-  test('refuses a plain GET rather than upgrading', async () => {
+  test('the websocket path is no longer a route', async () => {
     const cookie = await createSessionCookie(db.raw);
     const res = await app.request(
       `${GATEWAY}/api/auth/session-stream`,
-      { headers: { cookie, origin: ORIGIN } },
+      { headers: { cookie, origin: ORIGIN, upgrade: 'websocket' } },
       env
     );
-    expect(res.status).toBe(426);
+    expect(res.status).toBe(404);
+  });
+
+  test('the app serves a session with no Durable Object binding in its environment', async () => {
+    // `env` above declares AUTH_DB and AUTH_STORE and nothing else. A binding
+    // the code still reached for would surface here rather than on a deploy.
+    expect(Object.keys(env)).not.toContain('SESSION_HUB');
+    const cookie = await createSessionCookie(db.raw);
+    const res = await app.request(`${GATEWAY}/api/auth/get-session`, { headers: { cookie } }, env);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as any)?.user?.email).toBe(EMAIL);
   });
 });
 
-describe('fan out', () => {
-  test('signing out publishes an invalidation to the user hub', async () => {
-    const cookie = await createSessionCookie(db.raw);
+describe('one device signing out', () => {
+  test('leaves the same user session on another device alive', async () => {
+    // This is the property the removed fan out had to be careful not to break,
+    // and it now rests on D1 alone: a sign out deletes one session row. The
+    // other device keeps reading its own row and keeps being told it is valid,
+    // which is why polling cannot sign anyone else out.
+    const laptop = await createSessionCookie(db.raw);
+    const phone = await createSecondSessionCookie(db.raw);
+    expect(phone).not.toBe(laptop);
 
-    const res = await app.request(
+    const out = await app.request(
       `${GATEWAY}/api/auth/sign-out`,
       {
         method: 'POST',
-        headers: { cookie, origin: ORIGIN, 'content-type': 'application/json' },
+        headers: { cookie: laptop, origin: ORIGIN, 'content-type': 'application/json' },
         body: '{}',
       },
       env
     );
+    expect(out.status).toBe(200);
 
-    expect(res.status).toBe(200);
-    expect(published).toHaveLength(1);
-    expect(published[0].event).toMatchObject({ type: 'session.changed', reason: 'signed-out' });
-  });
-
-  test('the invalidation carries no session identifier', async () => {
-    // The hub is per user, so a push reaches other devices whose sessions are
-    // still valid. Clients must re-verify rather than act on pushed state.
-    const cookie = await createSessionCookie(db.raw);
-    await app.request(
-      `${GATEWAY}/api/auth/sign-out`,
-      {
-        method: 'POST',
-        headers: { cookie, origin: ORIGIN, 'content-type': 'application/json' },
-        body: '{}',
-      },
+    // No sleep and no propagation window: the very next read already knows.
+    const gone = await app.request(
+      `${GATEWAY}/api/auth/get-session`,
+      { headers: { cookie: laptop } },
       env
     );
+    expect(await gone.json()).toBeNull();
 
-    const serialised = JSON.stringify(published[0].event);
-    expect(serialised).not.toContain('token');
-    expect(Object.keys(published[0].event).sort()).toEqual(['at', 'reason', 'type']);
+    const alive = await app.request(
+      `${GATEWAY}/api/auth/get-session`,
+      { headers: { cookie: phone } },
+      env
+    );
+    expect(((await alive.json()) as any)?.user?.email).toBe(EMAIL);
   });
 
-  test('an unauthenticated sign out publishes nothing', async () => {
-    await app.request(`${GATEWAY}/api/auth/sign-out`, { method: 'POST' }, env);
-    expect(published).toHaveLength(0);
+  test('an unauthenticated sign out is harmless', async () => {
+    const res = await app.request(`${GATEWAY}/api/auth/sign-out`, { method: 'POST' }, env);
+    expect(res.status).toBeLessThan(500);
   });
 });
 

@@ -15,7 +15,6 @@ import { environmentDetectionMiddleware } from '@/middleware/environment';
 // Routes
 import { authRoutes } from '@/routes/auth';
 import { healthRoutes } from '@/routes/health';
-import { sessionStreamRoutes } from '@/routes/session-stream';
 import { BROWSER_CLIENT_JS } from '@/client/browser-client';
 import { DEMO_PAGE_HTML } from '@/client/demo-page';
 
@@ -43,9 +42,8 @@ app.use('*', async (c, next) => {
     // Validate environment variables and add the runtime bindings
     const validatedEnv = {
       ...EnvironmentSchema.parse(c.env),
-      AUTH_STORE: c.env.AUTH_STORE,  // KV namespace from the Cloudflare runtime
-      AUTH_DB: c.env.AUTH_DB,        // D1 session database from the Cloudflare runtime
-      SESSION_HUB: c.env.SESSION_HUB // Per user fan out for live session changes
+      AUTH_STORE: c.env.AUTH_STORE, // KV namespace from the Cloudflare runtime
+      AUTH_DB: c.env.AUTH_DB        // D1 session database from the Cloudflare runtime
     };
     
     // Store validated environment for use in other middleware
@@ -132,23 +130,13 @@ app.get('/', (c) => {
     version: '1.0.0',
     environment: c.env.NODE_ENV,
     timestamp: new Date().toISOString(),
+    // The gateway serves no websocket. Sessions are read over plain HTTP from
+    // get-session, which is what every client polls.
     endpoints: {
       health: '/health',
       auth: '/auth',
       api: '/api/*',
-      websocket: '/api/ws',
-      sync: '/api/1.25.4/sync',
-      versioned_sync: '/api/*/sync',
       docs: '/docs',
-    },
-    websocket_info: {
-      supported_endpoints: [
-        '/api/ws',
-        '/api/1.25.4/sync',
-        '/api/*/sync'
-      ],
-      upgrade_required: 'WebSocket upgrade headers required',
-      auth_required: 'Bearer token authentication required'
     },
     documentation: 'https://auth.example.com/docs',
     openapi: '/docs/openapi.yaml',
@@ -219,10 +207,6 @@ app.get('/demo', () => {
     },
   });
 });
-
-// Live session channel. Mounted ahead of the Better Auth passthrough, which
-// would otherwise swallow the path as an unknown Better Auth route.
-app.route('/api/auth/session-stream', sessionStreamRoutes);
 
 app.route('/api/auth', authRoutes);
 
@@ -302,11 +286,6 @@ export type { ApiResponse, HealthCheckResponse } from '@/types/api';
  * Export the Better Auth factory for tests and for embedding the gateway
  */
 export { createAuth } from '@/auth';
-
-/**
- * Durable Object class, referenced by the SESSION_HUB binding in wrangler.toml
- */
-export { SessionHub } from '@/durable/session-hub';
 
 /**
  * Development server support (for local development)

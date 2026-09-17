@@ -39,8 +39,7 @@ export const EnvironmentSchema = z.object({
   ...data,
   // Placeholders - the real bindings come from the Cloudflare runtime
   AUTH_STORE: undefined as any as KVNamespace,
-  AUTH_DB: undefined as any as D1Database,
-  SESSION_HUB: undefined as any as DurableObjectNamespace
+  AUTH_DB: undefined as any as D1Database
 }));
 
 // OAuth provider validation

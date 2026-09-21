@@ -1,4 +1,8 @@
-import type { CloudflareEnv } from '@/types/auth';
+export interface AuthConfigInput {
+  OAUTH_BASE_URL?: string;
+  ALLOWED_ORIGINS: string;
+  COOKIE_DOMAIN?: string;
+}
 
 function configuredURL(value: string | undefined, setting: string): URL {
   let url: URL;
@@ -22,7 +26,7 @@ export function normalizeTrustedOrigins(value: string): string[] {
 }
 
 /** The browser policy depends only on explicit URLs and cookie configuration. */
-export function resolveAuthConfig(env: Pick<CloudflareEnv, 'OAUTH_BASE_URL' | 'ALLOWED_ORIGINS' | 'COOKIE_DOMAIN'>) {
+export function resolveAuthConfig(env: AuthConfigInput) {
   const base = configuredURL(env.OAUTH_BASE_URL, 'OAUTH_BASE_URL');
   const domain = env.COOKIE_DOMAIN?.trim().toLowerCase() || undefined;
   if (domain) {

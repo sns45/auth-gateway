@@ -1,0 +1,32 @@
+name: Auth parity
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  auth-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.17.0'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Unit and configuration parity tests
+        run: bun run test:unit
+      - name: Session and cookie integration tests
+        run: bun run test:integration
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Build
+        run: bun run build

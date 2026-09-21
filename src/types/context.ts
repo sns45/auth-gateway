@@ -2,6 +2,7 @@ import { Context } from 'hono';
 import { CloudflareEnv } from './auth';
 import { Logger } from '@/middleware/logging';
 import { RateLimitStatus } from './auth';
+import type { AuthConfig } from '@/config/auth';
 
 /**
  * Extended Hono Context Variables
@@ -28,6 +29,7 @@ export interface Variables {
   
   // Validation
   validatedEnv: CloudflareEnv;
+  authConfig: AuthConfig;
   
   // Rate limiting
   rateLimit: RateLimitStatus;

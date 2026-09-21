@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { Context } from 'hono';
 import { APIErrorCodes } from '@/types/api';
+import { normalizeTrustedOrigins } from '@/config/auth';
 
 // Common validation schemas
 export const EmailSchema = z.string()
@@ -27,7 +28,7 @@ export const EnvironmentSchema = z.object({
   BETTER_AUTH_SECRET: z.string().min(32, 'BETTER_AUTH_SECRET must be at least 32 characters'),
   ALLOWED_ORIGINS: z.string().min(1, 'ALLOWED_ORIGINS is required'),
   FRONTEND_URL: URLSchema.optional().default('http://localhost:3000'),
-  OAUTH_BASE_URL: URLSchema.optional(),
+  OAUTH_BASE_URL: URLSchema,
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   RATE_LIMIT_WINDOW: z.union([z.string().regex(/^\d+$/).transform(Number), z.number()]).optional().default(60000),
@@ -61,37 +62,11 @@ export const OAuthCallbackSchema = z.object({
 
 // CORS origin validation
 export function validateOrigin(origin: string, allowedOrigins: string[]): boolean {
-  if (!origin) return false;
-  
-  for (const allowed of allowedOrigins) {
-    // Exact match
-    if (allowed === origin) {
-      return true;
-    }
-    
-    // Wildcard subdomain support (e.g., *.example.com)
-    if (allowed.startsWith('*.')) {
-      const domain = allowed.slice(2);
-      if (origin.endsWith(`.${domain}`) || origin === domain) {
-        return true;
-      }
-    }
-    
-    // Development localhost support
-    if (allowed === 'http://localhost:*' && origin.match(/^http:\/\/localhost:\d+$/)) {
-      return true;
-    }
-  }
-  
-  return false;
+  return allowedOrigins.includes(origin);
 }
 
-// Parse and validate allowed origins from environment
 export function parseAllowedOrigins(originsString: string): string[] {
-  return originsString
-    .split(',')
-    .map(origin => origin.trim())
-    .filter(origin => origin.length > 0);
+  return normalizeTrustedOrigins(originsString);
 }
 
 // Validate request body against schema

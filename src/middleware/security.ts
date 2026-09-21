@@ -1,5 +1,5 @@
 import { Next } from 'hono';
-// import { CloudflareEnv } from '@/types/auth';
+import { resolveAuthConfig } from '@/config/auth';
 import { SECURITY_HEADERS } from '@/types/api';
 import { AppContext } from '@/types/context';
 
@@ -66,10 +66,8 @@ export function createCSRFMiddleware() {
 
     // Check if request is from allowed origin
     if (origin) {
-      const allowedOrigins = env.ALLOWED_ORIGINS?.split(',') || [];
-      const isAllowedOrigin = allowedOrigins.some(allowed => 
-        origin === allowed.trim()
-      );
+      const policy = c.get('authConfig') ?? resolveAuthConfig(env);
+      const isAllowedOrigin = policy.trustedOrigins.includes(origin);
 
       if (!isAllowedOrigin) {
         return c.json({
@@ -81,9 +79,6 @@ export function createCSRFMiddleware() {
         }, 403);
       }
     }
-
-    // For session-based requests, check SameSite cookie policy
-    // The browser's SameSite=Strict policy provides CSRF protection
 
     await next();
   };
@@ -282,18 +277,4 @@ export function createSecurityStack() {
     createRequestSizeLimitMiddleware(),
     createPerformanceMiddleware(),
   ];
-}
-
-/**
- * Development security middleware (more relaxed)
- */
-export function createDevelopmentSecurityMiddleware() {
-  return async (c: AppContext, next: Next) => {
-    await next();
-
-    // Basic security headers for development
-    c.header('X-Content-Type-Options', 'nosniff');
-    c.header('X-Frame-Options', 'SAMEORIGIN');
-    c.header('X-Request-ID', c.get('requestId') || generateRequestId());
-  };
 }

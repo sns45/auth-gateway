@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { CloudflareEnv } from '@/types/auth';
 import { APIErrorCodes } from '@/types/api';
 import { AppContext } from '@/types/context';
-import { validateOrigin, parseAllowedOrigins } from '@/utils/validation';
+import { resolveAuthConfig, normalizeTrustedOrigins, type AuthConfig } from '@/config/auth';
 
 /**
  * Dynamic CORS middleware with multi-domain support
@@ -12,18 +12,13 @@ export function createCORSMiddleware() {
   return async (c: AppContext, next: Next) => {
     const env = c.env;
     const origin = c.req.header('origin');
-    const allowedOrigins = parseAllowedOrigins(env.ALLOWED_ORIGINS || '');
-    
-    // For development, allow localhost
-    if (env.NODE_ENV === 'development' && origin?.startsWith('http://localhost:')) {
-      allowedOrigins.push('http://localhost:*');
-    }
+    const allowedOrigins = (c.get('authConfig') ?? resolveAuthConfig(env)).trustedOrigins;
 
     // Validate origin
     let allowOrigin = false;
     let responseOrigin = '';
 
-    if (origin && validateOrigin(origin, allowedOrigins)) {
+    if (origin && allowedOrigins.includes(origin)) {
       allowOrigin = true;
       responseOrigin = origin;
     }
@@ -71,11 +66,12 @@ export function createCORSMiddleware() {
  * Simple CORS middleware using Hono's built-in cors
  * Alternative approach for simpler setups
  */
-export function createSimpleCORSMiddleware(allowedOrigins: string[]) {
+export function createSimpleCORSMiddleware(origins: string[]) {
+  const allowedOrigins = normalizeTrustedOrigins(origins.join(','));
   return cors({
     origin: (origin) => {
       if (!origin) return null;
-      return validateOrigin(origin, allowedOrigins) ? origin : null;
+      return allowedOrigins.includes(origin) ? origin : null;
     },
     credentials: true,
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -87,20 +83,8 @@ export function createSimpleCORSMiddleware(allowedOrigins: string[]) {
 /**
  * CORS configuration for different environments
  */
-export function getCORSConfig(env: CloudflareEnv) {
-  const allowedOrigins = parseAllowedOrigins(env.ALLOWED_ORIGINS || '');
-  
-  // Add development origins if in development mode
-  if (env.NODE_ENV === 'development') {
-    allowedOrigins.push(
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'http://localhost:8080',
-      'http://127.0.0.1:3000',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:8080'
-    );
-  }
+export function getCORSConfig(env: CloudflareEnv, policy: AuthConfig = resolveAuthConfig(env)) {
+  const allowedOrigins = policy.trustedOrigins;
 
   return {
     allowedOrigins,
@@ -137,7 +121,7 @@ export function createEnhancedCORSMiddleware() {
     const method = c.req.method;
     const requestId = c.get('requestId') || 'unknown';
     
-    const config = getCORSConfig(env);
+    const config = getCORSConfig(env, c.get('authConfig'));
     
     // Log CORS request for monitoring
     if (env.LOG_LEVEL === 'debug') {
@@ -147,7 +131,7 @@ export function createEnhancedCORSMiddleware() {
     // Validate origin
     let isAllowed = false;
     if (origin) {
-      isAllowed = validateOrigin(origin, config.allowedOrigins);
+      isAllowed = config.allowedOrigins.includes(origin);
     }
 
     // Handle preflight

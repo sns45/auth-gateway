@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { openAPI } from 'better-auth/plugins';
 import type { CloudflareEnv } from '@/types/auth';
+import { resolveAuthConfig, type AuthConfig } from '@/config/auth';
 
 /**
  * Better Auth instance for the gateway.
@@ -20,21 +21,16 @@ import type { CloudflareEnv } from '@/types/auth';
  *     the server cannot delete a cookie held on someone else's device, so a
  *     revoked session stays live until the cookie expires.
  */
-export function createAuth(env: CloudflareEnv) {
-  const trustedOrigins = (env.ALLOWED_ORIGINS ?? '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-
+export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthConfig(env)) {
   return betterAuth({
     // D1 binding passed straight through; Better Auth detects it and uses its
     // own Kysely D1 dialect. Every query goes to the primary instance, so a
     // delete is visible to the very next read.
     database: env.AUTH_DB,
 
-    baseURL: env.OAUTH_BASE_URL,
+    baseURL: config.baseURL,
     secret: env.BETTER_AUTH_SECRET,
-    trustedOrigins,
+    trustedOrigins: config.trustedOrigins,
 
     socialProviders: {
       google: {
@@ -53,15 +49,7 @@ export function createAuth(env: CloudflareEnv) {
     // maintained openapi.yaml.
     plugins: [openAPI()],
 
-    advanced: {
-      // The gateway is on auth.in8.sh and the app is on in8.sh, so the session
-      // cookie has to be scoped to the shared parent.
-      crossSubDomainCookies: {
-        enabled: true,
-        domain: env.COOKIE_DOMAIN,
-      },
-      useSecureCookies: env.NODE_ENV !== 'development',
-    },
+    advanced: config.advanced,
   });
 }
 

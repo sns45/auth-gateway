@@ -20,4 +20,4 @@ import { createAuth } from '@/auth';
  */
 export const authRoutes = new Hono<{ Bindings: CloudflareEnv; Variables: Variables }>();
 
-authRoutes.all('*', (c) => createAuth(c.env).handler(c.req.raw));
+authRoutes.all('*', (c) => createAuth(c.env, c.get('authConfig')).handler(c.req.raw));

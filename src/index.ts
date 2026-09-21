@@ -108,7 +108,7 @@ app.use('*', createEnhancedCORSMiddleware());
 const rateLimit = createRateLimitMiddleware({
   // Session probes are read-only, fired on every page view by frontends,
   // and each rate limit check costs KV reads/writes; exempt them.
-  skipPaths: ['/health', '/metrics', '/api/auth/get-session', '/auth/get-session'],
+  skipPaths: ['/health', '/metrics', '/api/auth/get-session', '/api/auth/administrator-session', '/auth/get-session'],
 });
 app.use('/api/*', rateLimit);
 

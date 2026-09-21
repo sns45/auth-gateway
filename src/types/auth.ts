@@ -85,6 +85,8 @@ export interface CloudflareEnv {
   NODE_ENV: 'production' | 'staging' | 'development';
   PORT?: string | number;
   ALLOWED_ORIGINS: string;
+  // Optional product administrator policy; generic authentication does not use it.
+  AUTH_ALLOWED_DOMAINS?: string;
   FRONTEND_URL?: string;
   GOOGLE_CLIENT_ID?: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';

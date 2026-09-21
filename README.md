@@ -111,11 +111,25 @@ when they are shown again.
 | `/demo` | live integration example; open it in two tabs to see the sync |
 | `/client.js` | the drop in browser client |
 | `/api/auth/*` | Better Auth, passthrough |
+| `/api/auth/administrator-session` | fresh session plus the configured platform administrator policy |
 | `/api/auth/reference` | OpenAPI spec, generated from the live config |
 | `/health`, `/health/ready`, `/health/live`, `/health/detailed` | queries D1 for real; 503 when it is down |
 
-There is no websocket endpoint. `get-session` is the only thing a client reads
-to learn about its session.
+There is no websocket endpoint. Generic clients read `get-session`; platform
+clients read `administrator-session` to require administrator access as well.
+
+Every verified account whose exact email domain appears in `AUTH_ALLOWED_DOMAINS`
+is an administrator. The pure `authorizeAdministratorEmail` function is exported
+as `hono-auth-gateway/administrator-policy` for platform consumers to import from
+a pinned gateway revision. Both edge and gateway use that same function. There
+are no role tables, extra session claims, or authorization caches.
+
+The administrator endpoint returns the same session and user shape as
+`get-session`, with `Cache-Control: private, no-store`. Missing, invalid, or
+revoked sessions return 401. Unverified or outside accounts, missing policy,
+and malformed domain lists return 403. Policy accepts exact comma separated
+domains, such as `prcpnt.com,lattiq.com`; wildcards and implicit subdomains are
+not accepted. Generic sign in and session endpoints do not apply this policy.
 
 The reference is generated rather than written, so it cannot drift from what
 the gateway serves.
@@ -137,6 +151,7 @@ Variables in `config/wrangler.toml`:
 |---|---|
 | `OAUTH_BASE_URL` | the gateway's own origin; OAuth callbacks are built from it |
 | `ALLOWED_ORIGINS` | comma separated origins allowed to call with credentials |
+| `AUTH_ALLOWED_DOMAINS` | optional exact domains for administrator access; used only by `administrator-session` |
 | `FRONTEND_URL` | default post sign in destination |
 | `GOOGLE_CLIENT_ID` | public by design, it appears in every OAuth redirect |
 | `COOKIE_DOMAIN` | optional explicit domain matching the base host or its parent; omit for a cookie restricted to the base host |

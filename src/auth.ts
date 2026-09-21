@@ -2,6 +2,9 @@ import { betterAuth } from 'better-auth';
 import { openAPI } from 'better-auth/plugins';
 import type { CloudflareEnv } from '@/types/auth';
 import { resolveAuthConfig, type AuthConfig } from '@/config/auth';
+import { authorizeAdministratorEmail } from '@/policy/administrator';
+
+const ACCESS_DENIED = 'This account does not have access to this platform';
 
 /**
  * Better Auth instance for the gateway.
@@ -36,6 +39,17 @@ export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthC
       google: {
         clientId: env.GOOGLE_CLIENT_ID ?? '',
         clientSecret: env.GOOGLE_CLIENT_SECRET ?? '',
+      },
+    },
+
+    // This runs before Better Auth creates a user, links an OAuth account or
+    // starts a provider sign in. Keep it on the shared policy seam so the
+    // gateway and edge cannot admit different accounts.
+    user: {
+      validateUserInfo: async ({ user, source }) => {
+        if (source.method !== 'oauth' || source.oauth?.providerId !== 'google') return;
+        if (authorizeAdministratorEmail(user, env.AUTH_ALLOWED_DOMAINS)) return;
+        return { error: 'access_denied', errorDescription: ACCESS_DENIED };
       },
     },
 

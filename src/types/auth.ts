@@ -94,7 +94,7 @@ export interface CloudflareEnv {
   RATE_LIMIT_MAX?: string | number;
   KV_NAMESPACE_ID?: string;
 
-  // Cookie domain override (defaults to the apex of the request hostname)
+  // Optional cookie domain; omitted means the cookie belongs only to the base host
   COOKIE_DOMAIN?: string;
 
   // OAuth Base URL for redirects

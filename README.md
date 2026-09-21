@@ -139,7 +139,7 @@ Variables in `config/wrangler.toml`:
 | `ALLOWED_ORIGINS` | comma separated origins allowed to call with credentials |
 | `FRONTEND_URL` | default post sign in destination |
 | `GOOGLE_CLIENT_ID` | public by design, it appears in every OAuth redirect |
-| `COOKIE_DOMAIN` | optional; defaults to the apex of the request hostname |
+| `COOKIE_DOMAIN` | optional explicit domain matching the base host or its parent; omit for a cookie restricted to the base host |
 | `NODE_ENV`, `LOG_LEVEL` | |
 
 Secrets, via `wrangler secret put` or Doppler:
@@ -153,6 +153,25 @@ The provider's Authorized redirect URI must be
 `{OAUTH_BASE_URL}/api/auth/callback/google`. A test pins this, because a
 mismatch fails every sign in and the fix lives in a console this repo cannot
 see.
+
+Cookie and origin policy is resolved once per request in `src/config/auth.ts`.
+HTTPS always uses `Secure` and the `__Secure-better-auth` cookie prefix, including
+local HTTPS. HTTP uses the same policy with secure cookies disabled. `NODE_ENV`
+does not select cookie attributes, allowed origins, or a weaker security stack.
+An empty `COOKIE_DOMAIN` disables cross subdomain cookies. A configured domain
+must match the base hostname or a parent domain. Sign in and sign out use the
+same cookie name, domain, path, and security attributes.
+
+`ALLOWED_ORIGINS` accepts exact HTTP or HTTPS origins, separated by commas.
+Whitespace, trailing slashes, default ports, and duplicate entries are normalized.
+Paths and wildcards are rejected. The base origin is also trusted, as it is by
+Better Auth itself. CORS and CSRF use this same list. Localhost receives no
+implicit exception. Configure every browser origin explicitly.
+
+Existing deployments with an explicit valid cookie domain and HTTPS retain
+their cookie names and attributes. Deployments that previously omitted the
+domain switch to cookies restricted to the base host. Local HTTP cookies do
+not migrate to the new HTTPS host; sign in again after restarting local services.
 
 ### Database
 

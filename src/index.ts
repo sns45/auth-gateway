@@ -8,7 +8,8 @@ import { APIErrorCodes } from '@/types/api';
 // Middleware
 import { createEnhancedCORSMiddleware } from '@/middleware/cors';
 import { createRateLimitMiddleware } from '@/middleware/rate-limit';
-import { createSecurityStack, createDevelopmentSecurityMiddleware } from '@/middleware/security';
+import { createSecurityStack } from '@/middleware/security';
+import { resolveAuthConfig } from '@/config/auth';
 import { createLoggingStack } from '@/middleware/logging';
 import { environmentDetectionMiddleware } from '@/middleware/environment';
 
@@ -48,6 +49,7 @@ app.use('*', async (c, next) => {
     
     // Store validated environment for use in other middleware
     c.set('validatedEnv', validatedEnv);
+    c.set('authConfig', resolveAuthConfig(validatedEnv));
     
     await next();
   } catch (error) {
@@ -67,7 +69,7 @@ app.use('*', async (c, next) => {
 });
 
 /**
- * Apply security middleware stack based on detected environment
+ * Apply the same security middleware stack in every environment
  */
 // Registered individually so Hono's own composer runs them. A hand rolled
 // chain cannot work here: these middlewares `await next()` without returning
@@ -77,17 +79,8 @@ app.use('*', async (c, next) => {
 // rejection into an unfinalised context, and the global handler reported it as
 // a 500, so a blocked attack was indistinguishable from a server fault.
 for (const middleware of createSecurityStack()) {
-  app.use('*', async (c, next) => {
-    if (!c.get('environment')?.isProduction) return next();
-    return middleware(c, next);
-  });
+  app.use('*', middleware);
 }
-
-const developmentSecurity = createDevelopmentSecurityMiddleware();
-app.use('*', async (c, next) => {
-  if (c.get('environment')?.isProduction) return next();
-  return developmentSecurity(c, next);
-});
 
 /**
  * Apply logging middleware

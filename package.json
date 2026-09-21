@@ -4,6 +4,11 @@
   "description": "Cloudflare Workers authentication gateway: Better Auth on D1, with immediate session revocation",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./administrator-policy": "./src/policy/administrator.ts",
+    "./auth-config": "./src/config/auth.ts"
+  },
   "scripts": {
     "dev:sync": "doppler secrets download --no-file --format env --project auth --config dev > .dev.vars",
     "dev": "bash scripts/dev.sh",

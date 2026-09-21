@@ -27,6 +27,7 @@ export const EnvironmentSchema = z.object({
   PORT: z.union([z.string().regex(/^\d+$/).transform(Number), z.number()]).optional().default(8787),
   BETTER_AUTH_SECRET: z.string().min(32, 'BETTER_AUTH_SECRET must be at least 32 characters'),
   ALLOWED_ORIGINS: z.string().min(1, 'ALLOWED_ORIGINS is required'),
+  AUTH_ALLOWED_DOMAINS: z.string().optional(),
   FRONTEND_URL: URLSchema.optional().default('http://localhost:3000'),
   OAUTH_BASE_URL: URLSchema,
   GOOGLE_CLIENT_ID: z.string().optional(),

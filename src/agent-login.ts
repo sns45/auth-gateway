@@ -1,10 +1,13 @@
 import type { BetterAuthPlugin } from 'better-auth';
-import { APIError, createAuthEndpoint } from 'better-auth/api';
+import { APIError, createAuthEndpoint, createAuthMiddleware } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
 import { authorizeAdministratorEmail } from '@/policy/administrator';
+import { AGENT_SESSION_MARKER } from '@/agent-session-marker';
 
 /** One hour, so a leaked agent cookie is short lived. */
 export const AGENT_SESSION_SECONDS = 60 * 60;
+
+export { AGENT_SESSION_MARKER };
 
 export interface AgentLoginEnv {
   AGENT_LOGIN_ENABLED?: string;
@@ -46,43 +49,79 @@ async function tokenMatches(presented: string, expected: string): Promise<boolea
 /**
  * Lets a coding agent sign in without a browser, for testing and debugging.
  *
- * `POST /api/auth/agent/sign-in` with `Authorization: Bearer <token>` sets the
- * same session cookie Google sign in sets, for one fixed account. The request
- * body is ignored, so the endpoint can never mint a session for a person.
- * Sessions live in D1 like every other, so deleting the agent's rows revokes
- * them on the next request.
+ * With a config, `POST /api/auth/agent/sign-in` and `Authorization: Bearer
+ * <token>` set the same session cookie Google sign in sets, for one fixed
+ * account. The request body is ignored, and an address that already signs in
+ * through a provider is refused, so the endpoint never mints a person's
+ * session.
+ *
+ * The session guard is registered whatever the config, because it is what
+ * enforces the limits: on every session read an agent session is deleted when
+ * agent sign in is off or the session is over an hour old, and is never slid
+ * forward. The cookie alone cannot promise either, since a client can drop it.
  */
-export function agentLogin(config: { email: string; token: string }): BetterAuthPlugin {
+export function agentLogin(config: { email: string; token: string } | null): BetterAuthPlugin {
   return {
     id: 'agent-login',
-    endpoints: {
-      agentSignIn: createAuthEndpoint('/agent/sign-in', { method: 'POST' }, async (ctx) => {
-        const header = ctx.headers?.get('authorization') ?? '';
-        const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
-        if (!presented || !(await tokenMatches(presented, config.token))) {
-          throw new APIError('UNAUTHORIZED', { message: 'Invalid agent token' });
-        }
-
-        const adapter = ctx.context.internalAdapter;
-        const found = await adapter.findUserByEmail(config.email);
-        const user =
-          found?.user ??
-          (await adapter.createUser(
-            { email: config.email, emailVerified: true, name: 'AI agent' },
-            { method: 'agent' },
-          ));
-
-        // Minted as a "don't remember me" session. Better Auth marks those
-        // with a second signed cookie and never slides them forward on read;
-        // an ordinary session would be refreshed to a full day by the first
-        // get-session after updateAge. So clients must send every cookie set
-        // here, which scripts/agent-login in the platform does.
-        const expiresAt = new Date(Date.now() + AGENT_SESSION_SECONDS * 1000);
-        const session = await adapter.createSession(user.id, true, { expiresAt }, true);
-        await setSessionCookie(ctx, { session, user }, true, { maxAge: AGENT_SESSION_SECONDS });
-        return ctx.json({ email: user.email, expiresAt: session.expiresAt });
-      }),
+    hooks: {
+      before: [
+        {
+          matcher: (ctx) => ctx.path === '/get-session',
+          handler: createAuthMiddleware(async (ctx) => {
+            const token = await ctx.getSignedCookie(
+              ctx.context.authCookies.sessionToken.name,
+              ctx.context.secret,
+            );
+            if (!token) return;
+            const found = await ctx.context.internalAdapter.findSession(token);
+            if (found?.session.userAgent !== AGENT_SESSION_MARKER) return;
+            const age = Date.now() - new Date(found.session.createdAt).getTime();
+            if (!config || age >= AGENT_SESSION_SECONDS * 1000) {
+              await ctx.context.internalAdapter.deleteSession(token);
+              return;
+            }
+            return { context: { query: { ...ctx.query, disableRefresh: true } } };
+          }),
+        },
+      ],
     },
-    rateLimit: [{ pathMatcher: (path) => path === '/agent/sign-in', window: 60, max: 5 }],
+    ...(config
+      ? {
+          endpoints: {
+            agentSignIn: createAuthEndpoint('/agent/sign-in', { method: 'POST' }, async (ctx) => {
+              const header = ctx.headers?.get('authorization') ?? '';
+              const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
+              if (!presented || !(await tokenMatches(presented, config.token))) {
+                throw new APIError('UNAUTHORIZED', { message: 'Invalid agent token' });
+              }
+
+              const adapter = ctx.context.internalAdapter;
+              const found = await adapter.findUserByEmail(config.email);
+              if (found && (await adapter.findAccounts(found.user.id)).length > 0) {
+                throw new APIError('FORBIDDEN', { message: 'The agent address belongs to a person' });
+              }
+              const user =
+                found?.user ??
+                (await adapter.createUser(
+                  { email: config.email, emailVerified: true, name: 'AI agent' },
+                  { method: 'agent' },
+                ));
+
+              // Also minted as a "don't remember me" session, so a client that
+              // keeps both cookies never triggers a refresh write at all.
+              const expiresAt = new Date(Date.now() + AGENT_SESSION_SECONDS * 1000);
+              const session = await adapter.createSession(
+                user.id,
+                true,
+                { expiresAt, userAgent: AGENT_SESSION_MARKER },
+                true,
+              );
+              await setSessionCookie(ctx, { session, user }, true, { maxAge: AGENT_SESSION_SECONDS });
+              return ctx.json({ email: user.email, expiresAt: session.expiresAt });
+            }),
+          },
+          rateLimit: [{ pathMatcher: (path: string) => path === '/agent/sign-in', window: 60, max: 5 }],
+        }
+      : {}),
   };
 }

@@ -7,7 +7,8 @@
   "exports": {
     ".": "./dist/index.js",
     "./administrator-policy": "./src/policy/administrator.ts",
-    "./auth-config": "./src/config/auth.ts"
+    "./auth-config": "./src/config/auth.ts",
+    "./agent-session-marker": "./src/agent-session-marker.ts"
   },
   "scripts": {
     "dev:sync": "doppler secrets download --no-file --format env --project auth --config dev > .dev.vars",

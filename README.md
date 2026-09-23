@@ -149,9 +149,9 @@ so it can test and debug a site by itself.
 - The body is ignored, and an address that already has a provider account is
   refused with 403, so the route never mints a session for a person.
 - Agent sessions are stored with `userAgent` set to `auth-gateway agent-login`.
-  On every session read the gateway deletes an agent session that is over an
-  hour old, or any agent session while agent sign in is off, and never slides
-  one forward. This holds whatever cookies the client keeps, and whatever
+  On every auth request the gateway deletes an agent session that is over an
+  hour old, or any agent session while agent sign in is off, never slides one
+  forward, and lets one only read the session or sign out (403 elsewhere). This holds whatever cookies the client keeps, and whatever
   `AGENT_LOGIN_EMAIL` is now.
 - Turning the flag off is therefore enough: new sign ins 404 and issued
   sessions are refused on their next request. Deleting rows by that

@@ -56,9 +56,10 @@ async function tokenMatches(presented: string, expected: string): Promise<boolea
  * session.
  *
  * The session guard is registered whatever the config, because it is what
- * enforces the limits: on every session read an agent session is deleted when
- * agent sign in is off or the session is over an hour old, and is never slid
- * forward. The cookie alone cannot promise either, since a client can drop it.
+ * enforces the limits: on every auth request an agent session is deleted when
+ * agent sign in is off or the session is over an hour old, is never slid
+ * forward, and may only read the session or sign out. The cookie alone cannot
+ * promise any of this, since a client can drop it.
  */
 export function agentLogin(config: { email: string; token: string } | null): BetterAuthPlugin {
   return {
@@ -66,7 +67,10 @@ export function agentLogin(config: { email: string; token: string } | null): Bet
     hooks: {
       before: [
         {
-          matcher: (ctx) => ctx.path === '/get-session',
+          // Every path, not only get-session: endpoints behind Better Auth's
+          // session middleware read the session without running hooks, and
+          // would otherwise refresh or use an agent session unchecked.
+          matcher: (ctx) => ctx.path !== '/agent/sign-in',
           handler: createAuthMiddleware(async (ctx) => {
             const token = await ctx.getSignedCookie(
               ctx.context.authCookies.sessionToken.name,
@@ -80,7 +84,13 @@ export function agentLogin(config: { email: string; token: string } | null): Bet
               await ctx.context.internalAdapter.deleteSession(token);
               return;
             }
-            return { context: { query: { ...ctx.query, disableRefresh: true } } };
+            // An agent reads its session and signs out; nothing else. The
+            // account endpoints would let a leaked cookie change the account
+            // or extend the session.
+            if (ctx.path === '/get-session')
+              return { context: { query: { ...ctx.query, disableRefresh: true } } };
+            if (ctx.path !== '/sign-out')
+              throw new APIError('FORBIDDEN', { message: 'Agent sessions may only read the session or sign out' });
           }),
         },
       ],

@@ -130,12 +130,53 @@ describe('agent sign in', () => {
     expect((db.raw.prepare('SELECT count(*) AS n FROM session').get() as any).n).toBe(0);
   });
 
+  function call(cookie: string, path: string, method = 'GET') {
+    const headers: Record<string, string> = { cookie, origin: ORIGIN };
+    if (method === 'POST') headers['content-type'] = 'application/json';
+    return app.request(`${ORIGIN}/api/auth/${path}`, { method, headers, ...(method === 'POST' ? { body: '{}' } : {}) }, env);
+  }
+
+  test.each([
+    ['list-sessions', 'GET'],
+    ['list-accounts', 'GET'],
+    ['update-user', 'POST'],
+    ['update-session', 'POST'],
+    ['revoke-other-sessions', 'POST'],
+  ])('an agent session cannot use %s, and it never extends the session', async (path, method) => {
+    const onlyToken = cookieFrom(await signIn()).split('; ').filter(c => c.includes('session_token')).join('; ');
+    db.raw.prepare('UPDATE session SET updatedAt = ?').run(new Date(Date.now() - 10 * 60 * 1000).toISOString());
+    const response = await call(onlyToken, path, method);
+    expect(response.status).toBe(403);
+    expect(response.headers.get('set-cookie')).toBeNull();
+    const row = db.raw.prepare('SELECT expiresAt FROM session').get() as { expiresAt: string | number };
+    expect(new Date(row.expiresAt).getTime() - Date.now()).toBeLessThanOrEqual(60 * 60 * 1000);
+  });
+
+  test('an aged or disabled agent session is deleted on any auth path, not only get-session', async () => {
+    const cookie = cookieFrom(await signIn());
+    db.raw.prepare('UPDATE session SET createdAt = ?').run(new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString());
+    expect((await call(cookie, 'list-sessions')).status).toBe(401);
+    expect((db.raw.prepare('SELECT count(*) AS n FROM session').get() as any).n).toBe(0);
+
+    const second = cookieFrom(await signIn());
+    env.AGENT_LOGIN_ENABLED = 'false';
+    expect((await call(second, 'list-sessions')).status).toBe(401);
+    expect((db.raw.prepare('SELECT count(*) AS n FROM session').get() as any).n).toBe(0);
+  });
+
+  test('an agent can sign out', async () => {
+    const cookie = cookieFrom(await signIn());
+    expect((await call(cookie, 'sign-out', 'POST')).status).toBe(200);
+    expect((db.raw.prepare('SELECT count(*) AS n FROM session').get() as any).n).toBe(0);
+  });
+
   test('leaves ordinary sessions alone, including their refresh', async () => {
     const person = await personCookie('person@prcpnt.com');
     db.raw.prepare('UPDATE session SET updatedAt = ?').run(new Date(Date.now() - 10 * 60 * 1000).toISOString());
     env.AGENT_LOGIN_ENABLED = 'false';
     const response = await session(person, 'administrator-session');
     expect(response.status).toBe(200);
+    expect((await call(person, 'list-sessions')).status).toBe(200);
     const row = db.raw.prepare('SELECT expiresAt FROM session').get() as { expiresAt: string | number };
     expect(new Date(row.expiresAt).getTime() - Date.now()).toBeGreaterThan(23 * 60 * 60 * 1000);
   });

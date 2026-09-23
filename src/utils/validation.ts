@@ -37,6 +37,9 @@ export const EnvironmentSchema = z.object({
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   KV_NAMESPACE_ID: z.string().optional(),
   COOKIE_DOMAIN: z.string().optional(),
+  AGENT_LOGIN_ENABLED: z.string().optional(),
+  AGENT_LOGIN_EMAIL: z.string().optional(),
+  AGENT_LOGIN_TOKEN: z.string().optional(),
 }).transform((data) => ({
   ...data,
   // Placeholders - the real bindings come from the Cloudflare runtime

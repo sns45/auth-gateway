@@ -3,6 +3,7 @@ import { openAPI } from 'better-auth/plugins';
 import type { CloudflareEnv } from '@/types/auth';
 import { resolveAuthConfig, type AuthConfig } from '@/config/auth';
 import { authorizeAdministratorEmail } from '@/policy/administrator';
+import { agentLogin, agentLoginConfig } from '@/agent-login';
 
 const ACCESS_DENIED = 'This account does not have access to this platform';
 
@@ -25,6 +26,7 @@ const ACCESS_DENIED = 'This account does not have access to this platform';
  *     revoked session stays live until the cookie expires.
  */
 export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthConfig(env)) {
+  const agent = agentLoginConfig(env);
   return betterAuth({
     // D1 binding passed straight through; Better Auth detects it and uses its
     // own Kysely D1 dialect. Every query goes to the primary instance, so a
@@ -61,7 +63,9 @@ export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthC
     // Generated from the live config, so the reference a new client site reads
     // can never drift from what the gateway actually serves. Replaces the hand
     // maintained openapi.yaml.
-    plugins: [openAPI()],
+    // Agent sign in is registered only when explicitly enabled; otherwise its
+    // route does not exist. See src/agent-login.ts.
+    plugins: agent ? [openAPI(), agentLogin(agent)] : [openAPI()],
 
     advanced: config.advanced,
   });

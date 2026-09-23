@@ -63,9 +63,10 @@ export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthC
     // Generated from the live config, so the reference a new client site reads
     // can never drift from what the gateway actually serves. Replaces the hand
     // maintained openapi.yaml.
-    // Agent sign in is registered only when explicitly enabled; otherwise its
-    // route does not exist. See src/agent-login.ts.
-    plugins: agent ? [openAPI(), agentLogin(agent)] : [openAPI()],
+    // Agent sign in's route exists only when explicitly enabled; its session
+    // guard is always on, so issued agent sessions die with the flag. See
+    // src/agent-login.ts.
+    plugins: [openAPI(), agentLogin(agent)],
 
     advanced: config.advanced,
   });

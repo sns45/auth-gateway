@@ -142,14 +142,22 @@ so it can test and debug a site by itself.
 
 - `POST /api/auth/agent/sign-in` with `Authorization: Bearer <AGENT_LOGIN_TOKEN>`
   sets the same session cookie Google sign in sets, for the one account named by
-  `AGENT_LOGIN_EMAIL`. The body is ignored.
+  `AGENT_LOGIN_EMAIL`.
 - The route exists only when `AGENT_LOGIN_ENABLED` is exactly `true`, the token
   has at least 32 characters, and the email passes the administrator policy.
   Anything else returns 404.
-- Sessions are capped at one hour and do not slide forward. Send back every
-  cookie the response sets.
-- Turning the flag off stops new sign ins. To end sessions already issued,
-  delete that account's rows from `session`; the next request is refused.
+- The body is ignored, and an address that already has a provider account is
+  refused with 403, so the route never mints a session for a person.
+- Agent sessions are stored with `userAgent` set to `auth-gateway agent-login`.
+  On every session read the gateway deletes an agent session that is over an
+  hour old, or any agent session while agent sign in is off, and never slides
+  one forward. This holds whatever cookies the client keeps, and whatever
+  `AGENT_LOGIN_EMAIL` is now.
+- Turning the flag off is therefore enough: new sign ins 404 and issued
+  sessions are refused on their next request. Deleting rows by that
+  `userAgent` is optional cleanup.
+- Send the site's origin in an `Origin` header. Better Auth refuses a
+  credentialed POST without one outside tests.
 - The code lives in `src/agent-login.ts`.
 
 ## Running it

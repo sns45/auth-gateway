@@ -91,6 +91,11 @@ export interface CloudflareEnv {
   GOOGLE_CLIENT_ID?: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
 
+  // Optional agent sign in (src/agent-login.ts). Off unless the flag is 'true'.
+  AGENT_LOGIN_ENABLED?: string;
+  AGENT_LOGIN_EMAIL?: string;
+  AGENT_LOGIN_TOKEN?: string; // secret
+
   // Rate limiting (KV backed)
   RATE_LIMIT_WINDOW?: string | number;
   RATE_LIMIT_MAX?: string | number;

@@ -113,6 +113,7 @@ when they are shown again.
 | `/api/auth/*` | Better Auth, passthrough |
 | `/api/auth/administrator-session` | fresh session plus the configured platform administrator policy |
 | `/api/auth/reference` | OpenAPI spec, generated from the live config |
+| `/api/auth/agent/sign-in` | agent sign in, only while `AGENT_LOGIN_ENABLED` is `true`; see below |
 | `/health`, `/health/ready`, `/health/live`, `/health/detailed` | queries D1 for real; 503 when it is down |
 
 There is no websocket endpoint. Generic clients read `get-session`; platform
@@ -133,6 +134,23 @@ not accepted. Generic sign in and session endpoints do not apply this policy.
 
 The reference is generated rather than written, so it cannot drift from what
 the gateway serves.
+
+### Agent sign in
+
+Optional, and off by default. It lets a coding agent sign in without a browser
+so it can test and debug a site by itself.
+
+- `POST /api/auth/agent/sign-in` with `Authorization: Bearer <AGENT_LOGIN_TOKEN>`
+  sets the same session cookie Google sign in sets, for the one account named by
+  `AGENT_LOGIN_EMAIL`. The body is ignored.
+- The route exists only when `AGENT_LOGIN_ENABLED` is exactly `true`, the token
+  has at least 32 characters, and the email passes the administrator policy.
+  Anything else returns 404.
+- Sessions are capped at one hour and do not slide forward. Send back every
+  cookie the response sets.
+- Turning the flag off stops new sign ins. To end sessions already issued,
+  delete that account's rows from `session`; the next request is refused.
+- The code lives in `src/agent-login.ts`.
 
 ## Running it
 
@@ -156,6 +174,8 @@ Variables in `config/wrangler.toml`:
 | `GOOGLE_CLIENT_ID` | public by design, it appears in every OAuth redirect |
 | `COOKIE_DOMAIN` | optional explicit domain matching the base host or its parent; omit for a cookie restricted to the base host |
 | `NODE_ENV`, `LOG_LEVEL` | |
+| `AGENT_LOGIN_ENABLED` | optional; `true` turns on agent sign in, anything else leaves it off |
+| `AGENT_LOGIN_EMAIL` | the single account agent sign in creates and signs in |
 
 Secrets, via `wrangler secret put` or Doppler:
 
@@ -163,6 +183,7 @@ Secrets, via `wrangler secret put` or Doppler:
 |---|---|
 | `BETTER_AUTH_SECRET` | signs session cookies; 32+ characters |
 | `GOOGLE_CLIENT_SECRET` | OAuth code exchange |
+| `AGENT_LOGIN_TOKEN` | optional bearer token for agent sign in; 32+ characters |
 
 The provider's Authorized redirect URI must be
 `{OAUTH_BASE_URL}/api/auth/callback/google`. A test pins this, because a

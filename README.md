@@ -165,6 +165,9 @@ so it can test and debug a site by itself.
 * An address that already has a provider account is refused with 403, so the
   route never mints a session for a person. New named accounts use the display
   name `AI agent (<name>)`; the base account keeps `AI agent`.
+* The session marker is reserved for the agent endpoint; ordinary session
+  creation and updates replace client supplied case and whitespace variants
+  with `reserved`.
 * Agent sessions are stored with `userAgent` set to `auth-gateway agent-login`.
   On every auth request the gateway deletes an agent session that is over an
   hour old, or any agent session while agent sign in is off, never slides one

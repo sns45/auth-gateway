@@ -152,3 +152,40 @@ describe('reserved agent marker on session creation', () => {
     expect((await call(cookieFrom(response), 'list-sessions')).status).toBe(403);
   });
 });
+
+describe('reserved agent marker on session updates', () => {
+  test.each([...MARKER_VARIANTS, '\nauth-gateway\nagent-login\n'])('cannot introduce the marker through update %j', async userAgent => {
+    const { auth, cookie } = await providerSession('browser/1.0');
+    const { internalAdapter } = await auth.$context;
+    const expiresAt = new Date(Date.now() + 20 * 60 * 60 * 1000);
+    const updated = await internalAdapter.updateSession(storedSession().token, { userAgent, expiresAt });
+    expect(updated?.userAgent).toBe('reserved');
+    expect(storedSession().userAgent).toBe('reserved');
+    expect(new Date(storedSession().expiresAt).getTime()).toBe(expiresAt.getTime());
+    expect((await call(cookie, 'list-accounts')).status).toBe(200);
+    env.AGENT_LOGIN_ENABLED = 'false';
+    expect((await call(cookie, 'administrator-session')).status).toBe(200);
+    expect(db.raw.prepare('SELECT count(*) AS n FROM session').get()).toEqual({ n: 1 });
+  });
+
+  test.each([null, '', 'browser/2.0', `${AGENT_SESSION_MARKER}/1.0`])('preserves an ordinary update value %j', async userAgent => {
+    const { auth } = await providerSession('browser/1.0');
+    const { internalAdapter } = await auth.$context;
+    const updated = await internalAdapter.updateSession(storedSession().token, { userAgent });
+    expect(updated?.userAgent).toBe(userAgent);
+    expect(storedSession().userAgent).toBe(userAgent);
+  });
+
+  test('an update without a user agent preserves the issued agent marker and restrictions', async () => {
+    const response = await app.request(`${ORIGIN}/api/auth/agent/sign-in`, {
+      method: 'POST',
+      headers: { origin: ORIGIN, authorization: `Bearer ${TOKEN}` },
+    }, env);
+    expect(response.status).toBe(200);
+    const { internalAdapter } = await createAuth(env).$context;
+    const updated = await internalAdapter.updateSession(storedSession().token, { updatedAt: new Date() });
+    expect(updated?.userAgent).toBe(AGENT_SESSION_MARKER);
+    expect(storedSession().userAgent).toBe(AGENT_SESSION_MARKER);
+    expect((await call(cookieFrom(response), 'list-sessions')).status).toBe(403);
+  });
+});

@@ -74,6 +74,9 @@ export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthC
             if (ctx?.path !== '/agent/sign-in') return reserveAgentSessionMarker(session);
           },
         },
+        update: {
+          before: async (session) => reserveAgentSessionMarker(session),
+        },
       },
     },
 

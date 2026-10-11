@@ -154,7 +154,11 @@ so it can test and debug a site by itself.
   address `agent+build.1@prcpnt.com` when the base is `agent@prcpnt.com`.
   An unlisted, malformed, empty or non string name returns 400 and creates
   nothing. No body, `{}`, or a body without `agent` signs in the base account.
-  A wrong token returns 401 before the body is parsed or validated.
+  Request bodies require `application/json`; unsupported media types return
+  415 after token verification and create nothing.
+* Outer controls run before the agent endpoint. An oversized body returns 413,
+  and an untrusted callback URL returns 403. A wrong token returns 401 only
+  when those controls pass, before the body is read, parsed or validated.
 * Named sign in returns 400 if the base local part already contains a plus
   tag. Each derived address must pass the same administrator policy and
   allowed domains; a refused derived address returns 403 and creates nothing.

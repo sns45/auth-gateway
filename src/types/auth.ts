@@ -95,6 +95,7 @@ export interface CloudflareEnv {
   AGENT_LOGIN_ENABLED?: string;
   AGENT_LOGIN_EMAIL?: string;
   AGENT_LOGIN_TOKEN?: string; // secret
+  AGENT_LOGIN_NAMES?: string;
 
   // Rate limiting (KV backed)
   RATE_LIMIT_WINDOW?: string | number;

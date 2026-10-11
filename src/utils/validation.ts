@@ -40,6 +40,7 @@ export const EnvironmentSchema = z.object({
   AGENT_LOGIN_ENABLED: z.string().optional(),
   AGENT_LOGIN_EMAIL: z.string().optional(),
   AGENT_LOGIN_TOKEN: z.string().optional(),
+  AGENT_LOGIN_NAMES: z.string().optional(),
 }).transform((data) => ({
   ...data,
   // Placeholders - the real bindings come from the Cloudflare runtime

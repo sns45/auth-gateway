@@ -140,25 +140,38 @@ the gateway serves.
 Optional, and off by default. It lets a coding agent sign in without a browser
 so it can test and debug a site by itself.
 
-- `POST /api/auth/agent/sign-in` with `Authorization: Bearer <AGENT_LOGIN_TOKEN>`
-  sets the same session cookie Google sign in sets, for the one account named by
+* `POST /api/auth/agent/sign-in` with `Authorization: Bearer <AGENT_LOGIN_TOKEN>`
+  sets the same session cookie Google sign in sets, for the base account named by
   `AGENT_LOGIN_EMAIL`.
-- The route exists only when `AGENT_LOGIN_ENABLED` is exactly `true`, the token
+* The route exists only when `AGENT_LOGIN_ENABLED` is exactly `true`, the token
   has at least 32 characters, and the email passes the administrator policy.
   Anything else returns 404.
-- The body is ignored, and an address that already has a provider account is
-  refused with 403, so the route never mints a session for a person.
-- Agent sessions are stored with `userAgent` set to `auth-gateway agent-login`.
+* Optional `AGENT_LOGIN_NAMES` is a comma separated allowlist, for example
+  `build.1,agent2`. Whitespace around commas is trimmed. Each name must match
+  `^[a-z0-9]+(\.[a-z0-9]+)*$` and have at most 32 characters. Any invalid entry
+  disables named sign in entirely while leaving base sign in available.
+* Send an optional JSON body `{"agent":"build.1"}` to sign in at the derived
+  address `agent+build.1@prcpnt.com` when the base is `agent@prcpnt.com`.
+  An unlisted, malformed, empty or non string name returns 400 and creates
+  nothing. No body, `{}`, or a body without `agent` signs in the base account.
+  A wrong token returns 401 before the body is parsed or validated.
+* Named sign in returns 400 if the base local part already contains a plus
+  tag. Each derived address must pass the same administrator policy and
+  allowed domains; a refused derived address returns 403 and creates nothing.
+* An address that already has a provider account is refused with 403, so the
+  route never mints a session for a person. New named accounts use the display
+  name `AI agent (<name>)`; the base account keeps `AI agent`.
+* Agent sessions are stored with `userAgent` set to `auth-gateway agent-login`.
   On every auth request the gateway deletes an agent session that is over an
   hour old, or any agent session while agent sign in is off, never slides one
   forward, and lets one only read the session or sign out (403 elsewhere). This holds whatever cookies the client keeps, and whatever
   `AGENT_LOGIN_EMAIL` is now.
-- Turning the flag off is therefore enough: new sign ins 404 and issued
+* Turning the flag off is therefore enough: new sign ins 404 and issued
   sessions are refused on their next request. Deleting rows by that
   `userAgent` is optional cleanup.
-- Send the site's origin in an `Origin` header. Better Auth refuses a
+* Send the site's origin in an `Origin` header. Better Auth refuses a
   credentialed POST without one outside tests.
-- The code lives in `src/agent-login.ts`.
+* The code lives in `src/agent-login.ts`.
 
 ## Running it
 
@@ -183,7 +196,8 @@ Variables in `config/wrangler.toml`:
 | `COOKIE_DOMAIN` | optional explicit domain matching the base host or its parent; omit for a cookie restricted to the base host |
 | `NODE_ENV`, `LOG_LEVEL` | |
 | `AGENT_LOGIN_ENABLED` | optional; `true` turns on agent sign in, anything else leaves it off |
-| `AGENT_LOGIN_EMAIL` | the single account agent sign in creates and signs in |
+| `AGENT_LOGIN_EMAIL` | the base account agent sign in creates and signs in |
+| `AGENT_LOGIN_NAMES` | optional comma separated allowlist for named agent accounts |
 
 Secrets, via `wrangler secret put` or Doppler:
 

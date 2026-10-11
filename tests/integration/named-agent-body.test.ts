@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import app from '@/index';
+import { createAuth } from '@/auth';
 import { createSqliteD1 } from '../helpers/sqlite-d1';
 
 const ORIGIN = 'https://platform.example.com';
@@ -77,4 +78,79 @@ describe('agent request media type', () => {
     expect(response.headers.get('set-cookie')).toContain('better-auth.session_token=');
     expect(db.raw.prepare('SELECT count(*) AS n FROM session').get()).toEqual({ n: 1 });
   });
+});
+
+function instrumentedRequest(token: string, body: string, contentType = 'application/json') {
+  let reads = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      reads++;
+      controller.enqueue(new TextEncoder().encode(body));
+      controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const request = new Request(`${ORIGIN}/api/auth/agent/sign-in`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, authorization: `Bearer ${token}`, 'content-type': contentType },
+    body: stream,
+    ...{ duplex: 'half' },
+  });
+  return { request, reads: () => reads };
+}
+
+function sendRequest(path: string, request: Request) {
+  return path === 'HTTP router'
+    ? app.request(request, undefined, env)
+    : createAuth(env).api.agentSignIn({ headers: request.headers, request, asResponse: true });
+}
+
+describe.each(['HTTP router', 'direct API'])('agent token ordering through the %s', path => {
+  test.each([
+    ['{"agent":"build.1"}', 'application/json'],
+    ['{"agent":"unknown"}', 'application/json'],
+    ['{"agent":null}', 'application/json'],
+    ['{"agent":', 'application/json'],
+    ['{"agent":"build.1"}', 'text/plain'],
+    ['{"agent":"build.1"}', 'multipart/form-data; boundary=review'],
+  ])('does not read body %s with content type %s for a wrong token', async (body, contentType) => {
+    const probe = instrumentedRequest('wrong-token-that-is-at-least-32-characters', body, contentType);
+    const response = await sendRequest(path, probe.request);
+    expect(probe.reads()).toBe(0);
+    expect(probe.request.bodyUsed).toBe(false);
+    expect(response.status).toBe(401);
+    expectNothingCreated(response);
+  });
+
+  test('observes a body read after a correct token', async () => {
+    const probe = instrumentedRequest(TOKEN, '{"agent":"build.1"}');
+    const response = await sendRequest(path, probe.request);
+    expect(probe.reads()).toBe(1);
+    expect(probe.request.bodyUsed).toBe(true);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ email: 'agent+build.1@prcpnt.com' });
+    expect(response.headers.get('set-cookie')).toContain('better-auth.session_token=');
+    expect(db.raw.prepare('SELECT email FROM user').all()).toEqual([{ email: 'agent+build.1@prcpnt.com' }]);
+    expect(db.raw.prepare('SELECT count(*) AS n FROM session').get()).toEqual({ n: 1 });
+  });
+});
+
+describe('direct API supplied body ordering', () => {
+  test.each([['wrong-token-that-is-at-least-32-characters', 401, 0], [TOKEN, 200, 1]])(
+    'uses token %s with status %i and %i getter accesses', async (token, status, accesses) => {
+      let reads = 0;
+      const body = { get agent() { reads++; return 'build.1'; } };
+      const response = await createAuth(env).api.agentSignIn({
+        headers: new Headers({ origin: ORIGIN, authorization: `Bearer ${token}` }),
+        body, asResponse: true,
+      });
+      expect(reads).toBe(accesses);
+      expect(response.status).toBe(status);
+      if (status === 401) expectNothingCreated(response);
+      else {
+        expect(await response.json()).toMatchObject({ email: 'agent+build.1@prcpnt.com' });
+        expect(response.headers.get('set-cookie')).toContain('better-auth.session_token=');
+        expect(db.raw.prepare('SELECT count(*) AS n FROM session').get()).toEqual({ n: 1 });
+      }
+    },
+  );
 });

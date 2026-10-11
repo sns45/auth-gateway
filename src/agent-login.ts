@@ -116,6 +116,13 @@ export function agentLogin(config: AgentLoginConfig | null): BetterAuthPlugin {
                 throw new APIError('UNAUTHORIZED', { message: 'Invalid agent token' });
               }
 
+              if (ctx.request?.body) {
+                const mediaType = ctx.request.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+                if (mediaType !== 'application/json') {
+                  throw new APIError('UNSUPPORTED_MEDIA_TYPE', { message: 'The agent request body must be JSON' });
+                }
+              }
+
               // Parse here so even invalid JSON cannot bypass the token check.
               let body: unknown = ctx.body;
               if (body === undefined && ctx.request?.body) {

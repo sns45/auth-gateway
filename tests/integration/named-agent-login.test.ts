@@ -237,6 +237,16 @@ describe('direct agent sign in API', () => {
 });
 
 describe('named agent session safeguards', () => {
+  async function liveNamedSession() {
+    const response = await signIn();
+    expect(response.status).toBe(200);
+    const cookie = cookieFrom(response);
+    expect(cookie).toContain('better-auth.session_token=');
+    const rows = db.raw.prepare('SELECT session.userId, user.email FROM session LEFT JOIN user ON user.id = session.userId').all();
+    expect(rows).toEqual([{ userId: expect.any(String), email: 'agent+build.1@prcpnt.com' }]);
+    return { cookie, userId: rows[0].userId as string };
+  }
+
   function session(cookie: string, path = 'get-session', method = 'GET') {
     const headers: Record<string, string> = { cookie, origin: ORIGIN };
     if (method === 'POST') headers['content-type'] = 'application/json';
@@ -256,11 +266,18 @@ describe('named agent session safeguards', () => {
   });
 
   test.each(['get-session', 'administrator-session'])('does not slide the session on %s with only the token cookie', async path => {
-    const cookie = cookieFrom(await signIn()).split('; ').filter(c => c.includes('session_token')).join('; ');
+    const signedIn = await liveNamedSession();
+    const cookie = signedIn.cookie.split('; ').filter(c => c.includes('session_token')).join('; ');
     db.raw.prepare('UPDATE session SET updatedAt = ?').run(new Date(Date.now() - 10 * 60 * 1000).toISOString());
     const before = db.raw.prepare('SELECT expiresAt FROM session').get();
     const response = await session(cookie, path);
     expect(response.status).toBe(200);
+    const returned = await response.json();
+    expect(returned).not.toBeNull();
+    expect(returned).toMatchObject({
+      session: { userId: signedIn.userId },
+      user: { id: signedIn.userId, email: 'agent+build.1@prcpnt.com' },
+    });
     expect(response.headers.get('set-cookie')).toBeNull();
     expect(db.raw.prepare('SELECT expiresAt FROM session').get()).toEqual(before);
   });
@@ -281,7 +298,7 @@ describe('named agent session safeguards', () => {
   });
 
   test('allows a named agent to sign out', async () => {
-    const cookie = cookieFrom(await signIn());
+    const { cookie } = await liveNamedSession();
     expect((await session(cookie, 'sign-out', 'POST')).status).toBe(200);
     expect(db.raw.prepare('SELECT count(*) AS n FROM session').get()).toEqual({ n: 0 });
     expect(await (await session(cookie)).json()).toBeNull();
@@ -292,7 +309,7 @@ describe('named agent session safeguards', () => {
     { AGENT_LOGIN_ENABLED: 'false', AGENT_LOGIN_EMAIL: 'other@prcpnt.com' },
     { AGENT_LOGIN_ENABLED: undefined, AGENT_LOGIN_EMAIL: undefined, AGENT_LOGIN_TOKEN: undefined, AGENT_LOGIN_NAMES: undefined },
   ])('deletes a named session when agent sign in is off %j', async override => {
-    const cookie = cookieFrom(await signIn());
+    const { cookie } = await liveNamedSession();
     Object.assign(env, override);
     expect((await session(cookie, 'administrator-session')).status).toBe(401);
     expect(await (await session(cookie)).json()).toBeNull();
@@ -300,7 +317,7 @@ describe('named agent session safeguards', () => {
   });
 
   test('deletes a named session older than an hour on any auth path', async () => {
-    const cookie = cookieFrom(await signIn());
+    const { cookie } = await liveNamedSession();
     db.raw.prepare('UPDATE session SET createdAt = ?, expiresAt = ?').run(
       new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
       new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString(),

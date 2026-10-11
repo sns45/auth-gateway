@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { betterAuth } from 'better-auth';
 import app from '@/index';
 import { createAuth } from '@/auth';
 import { createSqliteD1 } from '../helpers/sqlite-d1';
@@ -80,7 +81,7 @@ describe('agent request media type', () => {
   });
 });
 
-function instrumentedRequest(token: string, body: string, contentType = 'application/json') {
+function instrumentedRequest(token: string, body: string, contentType = 'application/json', query = '') {
   let reads = 0;
   const stream = new ReadableStream<Uint8Array>({
     pull(controller) {
@@ -89,7 +90,7 @@ function instrumentedRequest(token: string, body: string, contentType = 'applica
       controller.close();
     },
   }, { highWaterMark: 0 });
-  const request = new Request(`${ORIGIN}/api/auth/agent/sign-in`, {
+  const request = new Request(`${ORIGIN}/api/auth/agent/sign-in${query}`, {
     method: 'POST',
     headers: { origin: ORIGIN, authorization: `Bearer ${token}`, 'content-type': contentType },
     body: stream,
@@ -153,4 +154,25 @@ describe('direct API supplied body ordering', () => {
       }
     },
   );
+});
+
+describe.each([TOKEN, 'wrong-token-that-is-at-least-32-characters'])('outer agent controls with token %s', token => {
+  test.each([
+    ['oversized body', '1048577', '', 413],
+    ['untrusted callback URL', '', '?callbackURL=https%3A%2F%2Funtrusted.example.com', 403],
+  ])('refuses %s before reading the body', async (_reason, contentLength, query, status) => {
+    const probe = instrumentedRequest(token, '{"agent":"build.1"}', 'application/json', query);
+    if (contentLength) probe.request.headers.set('content-length', contentLength);
+    const options = createAuth(env).options;
+    // Better Auth skips origin checks in tests unless they are explicitly enabled.
+    const response = contentLength
+      ? await app.request(probe.request, undefined, env)
+      : await betterAuth({
+          ...options, advanced: { ...options.advanced, disableOriginCheck: false },
+        }).handler(probe.request);
+    expect(response.status).toBe(status);
+    expect(probe.reads()).toBe(0);
+    expect(probe.request.bodyUsed).toBe(false);
+    expectNothingCreated(response);
+  });
 });

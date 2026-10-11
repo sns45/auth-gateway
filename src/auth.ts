@@ -4,8 +4,14 @@ import type { CloudflareEnv } from '@/types/auth';
 import { resolveAuthConfig, type AuthConfig } from '@/config/auth';
 import { authorizeAdministratorEmail } from '@/policy/administrator';
 import { agentLogin, agentLoginConfig } from '@/agent-login';
+import { AGENT_SESSION_MARKER } from '@/agent-session-marker';
 
 const ACCESS_DENIED = 'This account does not have access to this platform';
+
+function reserveAgentSessionMarker(session: { userAgent?: string | null }) {
+  const normalized = session.userAgent?.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (normalized === AGENT_SESSION_MARKER) return { data: { userAgent: 'reserved' } };
+}
 
 /**
  * Better Auth instance for the gateway.
@@ -58,6 +64,17 @@ export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthC
     session: {
       expiresIn: 60 * 60 * 24, // 24 hours, matching the previous store
       updateAge: 60 * 5,       // refresh the row at most every 5 minutes
+    },
+
+    databaseHooks: {
+      session: {
+        create: {
+          before: async (session, ctx) => {
+            // The agent endpoint verifies its token before minting the marker.
+            if (ctx?.path !== '/agent/sign-in') return reserveAgentSessionMarker(session);
+          },
+        },
+      },
     },
 
     // Generated from the live config, so the reference a new client site reads

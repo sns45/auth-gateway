@@ -13,7 +13,15 @@ export interface AgentLoginEnv {
   AGENT_LOGIN_ENABLED?: string;
   AGENT_LOGIN_EMAIL?: string;
   AGENT_LOGIN_TOKEN?: string;
+  AGENT_LOGIN_NAMES?: string;
   AUTH_ALLOWED_DOMAINS?: string;
+}
+
+export interface AgentLoginConfig {
+  email: string;
+  token: string;
+  names: string[];
+  allowedDomains: string | undefined;
 }
 
 /**
@@ -23,7 +31,7 @@ export interface AgentLoginEnv {
  * guessing, and the email would pass the same administrator policy a Google
  * account must pass. Anything else leaves the route unregistered, so it 404s.
  */
-export function agentLoginConfig(env: AgentLoginEnv): { email: string; token: string } | null {
+export function agentLoginConfig(env: AgentLoginEnv): AgentLoginConfig | null {
   if (env.AGENT_LOGIN_ENABLED !== 'true') return null;
   const token = env.AGENT_LOGIN_TOKEN ?? '';
   if (token.length < 32) return null;
@@ -31,7 +39,10 @@ export function agentLoginConfig(env: AgentLoginEnv): { email: string; token: st
     { email: env.AGENT_LOGIN_EMAIL, emailVerified: true },
     env.AUTH_ALLOWED_DOMAINS,
   );
-  return email ? { email, token } : null;
+  if (!email) return null;
+  const names = env.AGENT_LOGIN_NAMES?.split(',').map((name) => name.trim()) ?? [];
+  const validNames = names.every((name) => name.length <= 32 && /^[a-z0-9]+(\.[a-z0-9]+)*$/.test(name));
+  return { email, token, names: validNames ? names : [], allowedDomains: env.AUTH_ALLOWED_DOMAINS };
 }
 
 async function digest(value: string): Promise<Uint8Array> {
@@ -50,10 +61,10 @@ async function tokenMatches(presented: string, expected: string): Promise<boolea
  * Lets a coding agent sign in without a browser, for testing and debugging.
  *
  * With a config, `POST /api/auth/agent/sign-in` and `Authorization: Bearer
- * <token>` set the same session cookie Google sign in sets, for one fixed
- * account. The request body is ignored, and an address that already signs in
- * through a provider is refused, so the endpoint never mints a person's
- * session.
+ * <token>` set the same session cookie Google sign in sets, for the base
+ * account or a listed name at a derived plus address. An address that already
+ * signs in through a provider is refused, so the endpoint never mints a
+ * person's session.
  *
  * The session guard is registered whatever the config, because it is what
  * enforces the limits: on every auth request an agent session is deleted when
@@ -61,7 +72,7 @@ async function tokenMatches(presented: string, expected: string): Promise<boolea
  * forward, and may only read the session or sign out. The cookie alone cannot
  * promise any of this, since a client can drop it.
  */
-export function agentLogin(config: { email: string; token: string } | null): BetterAuthPlugin {
+export function agentLogin(config: AgentLoginConfig | null): BetterAuthPlugin {
   return {
     id: 'agent-login',
     hooks: {
@@ -98,22 +109,56 @@ export function agentLogin(config: { email: string; token: string } | null): Bet
     ...(config
       ? {
           endpoints: {
-            agentSignIn: createAuthEndpoint('/agent/sign-in', { method: 'POST' }, async (ctx) => {
+            agentSignIn: createAuthEndpoint('/agent/sign-in', { method: 'POST', disableBody: true }, async (ctx) => {
               const header = ctx.headers?.get('authorization') ?? '';
               const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
               if (!presented || !(await tokenMatches(presented, config.token))) {
                 throw new APIError('UNAUTHORIZED', { message: 'Invalid agent token' });
               }
 
+              // Parse here so even invalid JSON cannot bypass the token check.
+              let body: unknown = ctx.body;
+              if (body === undefined && ctx.request?.body) {
+                const text = await ctx.request.text();
+                if (text) {
+                  try {
+                    body = JSON.parse(text);
+                  } catch {
+                    throw new APIError('BAD_REQUEST', { message: 'Invalid agent request body' });
+                  }
+                }
+              }
+              let email = config.email;
+              let displayName = 'AI agent';
+              if (body && typeof body === 'object' && 'agent' in body) {
+                const name = (body as Record<string, unknown>).agent;
+                if (typeof name !== 'string' || !config.names.includes(name)) {
+                  throw new APIError('BAD_REQUEST', { message: 'Invalid agent name' });
+                }
+                const [local, domain] = config.email.split('@');
+                if (local.includes('+')) {
+                  throw new APIError('BAD_REQUEST', { message: 'The base agent address already has a plus tag' });
+                }
+                const authorized = authorizeAdministratorEmail(
+                  { email: `${local}+${name}@${domain}`, emailVerified: true },
+                  config.allowedDomains,
+                );
+                if (!authorized) {
+                  throw new APIError('FORBIDDEN', { message: 'The agent address is not authorized' });
+                }
+                email = authorized;
+                displayName = `AI agent (${name})`;
+              }
+
               const adapter = ctx.context.internalAdapter;
-              const found = await adapter.findUserByEmail(config.email);
+              const found = await adapter.findUserByEmail(email);
               if (found && (await adapter.findAccounts(found.user.id)).length > 0) {
                 throw new APIError('FORBIDDEN', { message: 'The agent address belongs to a person' });
               }
               const user =
                 found?.user ??
                 (await adapter.createUser(
-                  { email: config.email, emailVerified: true, name: 'AI agent' },
+                  { email, emailVerified: true, name: displayName },
                   { method: 'agent' },
                 ));
 

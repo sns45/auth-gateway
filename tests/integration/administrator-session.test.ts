@@ -129,6 +129,71 @@ describe('administrator session', () => {
     expect(new Date(row.expiresAt).getTime()).toBeGreaterThan(oldExpiry);
   });
 
+  describe('while D1 refuses writes', () => {
+    // D1's message once an account spends its daily free tier write allowance.
+    const LIMIT = 'D1_ERROR: Exceeded maximum daily write limit';
+
+    function refuseWrites() {
+      const prepare = db.prepare.bind(db);
+      env.AUTH_DB = {
+        ...db,
+        prepare: (sql: string) => {
+          if (!/^\s*(insert|update|delete)\b/i.test(sql)) return prepare(sql);
+          const refuse = async () => { throw new Error(LIMIT); };
+          const statement = { bind: () => statement, first: refuse, all: refuse, run: refuse, raw: refuse };
+          return statement;
+        },
+      };
+    }
+
+    function ageSession() {
+      const expiry = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      db.raw.prepare('UPDATE session SET expiresAt = ?').run(expiry);
+      return expiry;
+    }
+
+    test('keeps a session that is due for renewal, without renewing it', async () => {
+      const cookie = await sessionCookie('person@prcpnt.com');
+      const expiry = ageSession();
+      refuseWrites();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect((await readSession(cookie, 'get-session')).status).toBe(500);
+      const response = await readSession(cookie);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect((await response.json() as any).user.email).toBe('person@prcpnt.com');
+      expect(response.headers.get('set-cookie') ?? '').not.toContain('session_token=');
+      expect(db.raw.prepare('SELECT expiresAt FROM session').get().expiresAt).toBe(expiry);
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    test('still rejects a revoked session', async () => {
+      const cookie = await sessionCookie('person@prcpnt.com');
+      ageSession();
+      db.raw.prepare('DELETE FROM session').run();
+      refuseWrites();
+      expect((await readSession(cookie)).status).toBe(401);
+    });
+
+    test('still applies the email policy', async () => {
+      const cookie = await sessionCookie('person@elsewhere.com');
+      ageSession();
+      refuseWrites();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect((await readSession(cookie)).status).toBe(403);
+    });
+
+    test('never serves an expired session', async () => {
+      const cookie = await sessionCookie('person@prcpnt.com');
+      db.raw.prepare('UPDATE session SET expiresAt = ?').run(new Date(Date.now() - 1000).toISOString());
+      refuseWrites();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const response = await readSession(cookie);
+      expect(response.status).not.toBe(200);
+    });
+  });
+
   test('forwards every clearing cookie for an expired session', async () => {
     env.COOKIE_DOMAIN = 'platform.example.com';
     const cookie = await sessionCookie('person@lattiq.com');

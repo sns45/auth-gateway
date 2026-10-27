@@ -75,6 +75,39 @@ describe('session database timing', () => {
     expect(diag.d1).toMatchObject({ statements: 1, failures: 0 });
   });
 
+  test('a transient D1 reset is retried and the statement succeeds', async () => {
+    const diag = newDiagnostics('ray-r');
+    let calls = 0;
+    const flaky = {
+      prepare: () => ({
+        bind: () => ({
+          run: async () => {
+            calls++;
+            if (calls < 3) throw new Error('D1_ERROR: Internal error in D1 DB storage caused object to be reset; reference = abc');
+            return { success: true };
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+    await expect(instrumentD1(flaky, diag).prepare('insert into "user" ("id") values (?)').bind('u1').run()).resolves.toEqual({ success: true });
+    expect(calls).toBe(3);
+    expect(diag.d1.failures).toBe(0);
+    expect(events('gw.d1_retry')).toHaveLength(2);
+    expect(events('gw.d1_retry')[0]).toMatchObject({ ray: 'ray-r', op: 'INSERT', table: 'user', attempt: 1 });
+  });
+
+  test('a transient reset that persists fails after three attempts, and other errors are never retried', async () => {
+    const diag = newDiagnostics('ray-p');
+    let resets = 0, limits = 0;
+    const db = (message: string, count: () => void) => ({
+      prepare: () => ({ bind: () => ({ all: async () => { count(); throw new Error(message); } }) }),
+    }) as unknown as D1Database;
+    await expect(instrumentD1(db('D1_ERROR: Network connection lost.', () => resets++), diag).prepare('select 1 from session').bind().all()).rejects.toThrow('Network connection lost');
+    expect(resets).toBe(3);
+    await expect(instrumentD1(db('D1_ERROR: Exceeded daily write limit', () => limits++), diag).prepare('update session set x=?').bind(1).all()).rejects.toThrow('daily write limit');
+    expect(limits).toBe(1);
+  });
+
   test('a failed statement logs its operation, table and scrubbed message, never its values', async () => {
     const diag = newDiagnostics('ray-2');
     const failing = {

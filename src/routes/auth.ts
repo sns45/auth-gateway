@@ -5,6 +5,7 @@ import { CloudflareEnv } from '@/types/auth';
 import { Variables } from '@/types/context';
 import { createAuth, type Auth } from '@/auth';
 import { authorizeAdministratorEmail } from '@/policy/administrator';
+import type { Diagnostics } from '@/observability/diagnostics';
 
 /**
  * Reads the session, renewing it when it is due.
@@ -17,12 +18,13 @@ import { authorizeAdministratorEmail } from '@/policy/administrator';
  * session the renewing read would have refused; the session simply stops
  * sliding forward until writes work again.
  */
-async function readSession(auth: Auth, headers: Headers) {
+async function readSession(auth: Auth, headers: Headers, diag?: Diagnostics) {
   try {
     return await auth.api.getSession({ headers, returnHeaders: true });
   } catch (error) {
     if (!isAPIError(error) || error.status !== 'INTERNAL_SERVER_ERROR') throw error;
     console.warn('[SESSION] renewal failed, serving the session without renewing it');
+    diag?.notes.push('renewal failed, served without renewing');
     return auth.api.getSession({ headers, query: { disableRefresh: true }, returnHeaders: true });
   }
 }
@@ -35,8 +37,10 @@ export const authRoutes = new Hono<{ Bindings: CloudflareEnv; Variables: Variabl
 
 authRoutes.get('/administrator-session', async (c) => {
   c.header('Cache-Control', 'private, no-store');
-  const auth = createAuth(c.env, c.get('authConfig'));
-  const { response: session, headers } = await readSession(auth, c.req.raw.headers);
+  const diag = c.get('diag');
+  const auth = createAuth(c.env, c.get('authConfig'), diag);
+  const { response: session, headers } = await readSession(auth, c.req.raw.headers, diag);
+  if (session && diag) diag.uid = session.user.id;
   for (const cookie of splitSetCookieHeader(headers.get('set-cookie') ?? '')) {
     c.header('Set-Cookie', cookie, { append: true });
   }
@@ -49,4 +53,4 @@ authRoutes.get('/administrator-session', async (c) => {
   return c.json(session);
 });
 
-authRoutes.all('*', (c) => createAuth(c.env, c.get('authConfig')).handler(c.req.raw));
+authRoutes.all('*', (c) => createAuth(c.env, c.get('authConfig'), c.get('diag')).handler(c.req.raw));

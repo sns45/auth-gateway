@@ -3,6 +3,7 @@ import { CloudflareEnv } from './auth';
 import { Logger } from '@/middleware/logging';
 import { RateLimitStatus } from './auth';
 import type { AuthConfig } from '@/config/auth';
+import type { Diagnostics } from '@/observability/diagnostics';
 
 /**
  * Extended Hono Context Variables
@@ -15,6 +16,7 @@ export interface Variables {
 
   // Request tracking
   requestId: string;
+  diag: Diagnostics;
   logger: Logger;
   
   // Environment

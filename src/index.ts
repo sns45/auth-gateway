@@ -12,6 +12,8 @@ import { createSecurityStack } from '@/middleware/security';
 import { resolveAuthConfig } from '@/config/auth';
 import { createLoggingStack } from '@/middleware/logging';
 import { environmentDetectionMiddleware } from '@/middleware/environment';
+import { createDiagnosticsMiddleware } from '@/observability/diagnostics';
+import { describeError } from '@/observability/redact';
 
 // Routes
 import { authRoutes } from '@/routes/auth';
@@ -25,7 +27,13 @@ import { DEMO_PAGE_HTML } from '@/client/demo-page';
 const app = new Hono<{ Bindings: CloudflareEnv; Variables: Variables }>();
 
 /**
- * Environment detection middleware (must run first)
+ * Privacy safe request diagnostics (first, so its timing and line cover the
+ * whole request, including anything a later middleware refuses)
+ */
+app.use('*', createDiagnosticsMiddleware());
+
+/**
+ * Environment detection middleware
  */
 app.use('*', environmentDetectionMiddleware);
 
@@ -224,7 +232,7 @@ app.onError((error, c) => {
   const logger = c.get('logger');
   const requestId = c.get('requestId') || 'unknown';
   
-  console.error(`[ERROR] ${requestId}:`, error);
+  console.error(`[ERROR] ${requestId}:`, JSON.stringify(describeError(error)));
   
   if (logger) {
     logger.error('Unhandled application error', {

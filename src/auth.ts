@@ -5,6 +5,7 @@ import { resolveAuthConfig, type AuthConfig } from '@/config/auth';
 import { authorizeAdministratorEmail } from '@/policy/administrator';
 import { agentLogin, agentLoginConfig } from '@/agent-login';
 import { AGENT_SESSION_MARKER } from '@/agent-session-marker';
+import { betterAuthLogger, diagLog, instrumentD1, pseudonym, type Diagnostics } from '@/observability/diagnostics';
 
 const ACCESS_DENIED = 'This account does not have access to this platform';
 
@@ -31,13 +32,14 @@ function reserveAgentSessionMarker(session: { userAgent?: string | null }) {
  *     the server cannot delete a cookie held on someone else's device, so a
  *     revoked session stays live until the cookie expires.
  */
-export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthConfig(env)) {
+export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthConfig(env), diag?: Diagnostics) {
   const agent = agentLoginConfig(env);
   return betterAuth({
     // D1 binding passed straight through; Better Auth detects it and uses its
     // own Kysely D1 dialect. Every query goes to the primary instance, so a
     // delete is visible to the very next read.
-    database: env.AUTH_DB,
+    database: diag ? instrumentD1(env.AUTH_DB, diag) : env.AUTH_DB,
+    logger: betterAuthLogger(diag),
 
     baseURL: config.baseURL,
     secret: env.BETTER_AUTH_SECRET,
@@ -56,7 +58,9 @@ export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthC
     user: {
       validateUserInfo: async ({ user, source }) => {
         if (source.method !== 'oauth' || source.oauth?.providerId !== 'google') return;
-        if (authorizeAdministratorEmail(user, env.AUTH_ALLOWED_DOMAINS)) return;
+        const allowed = authorizeAdministratorEmail(user, env.AUTH_ALLOWED_DOMAINS) !== null;
+        if (diag) await noteOAuthUser(env, diag, user, allowed);
+        if (allowed) return;
         return { error: 'access_denied', errorDescription: ACCESS_DENIED };
       },
     },
@@ -67,11 +71,27 @@ export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthC
     },
 
     databaseHooks: {
+      user: {
+        create: {
+          after: async (user) => {
+            if (diag) {
+              diag.uid = user.id;
+              diag.notes.push('user created');
+            }
+          },
+        },
+      },
       session: {
         create: {
           before: async (session, ctx) => {
             // The agent endpoint verifies its token before minting the marker.
             if (ctx?.path !== '/agent/sign-in') return reserveAgentSessionMarker(session);
+          },
+          after: async (session) => {
+            if (diag) {
+              diag.uid = session.userId;
+              diag.notes.push('session created');
+            }
           },
         },
         update: {
@@ -93,3 +113,21 @@ export function createAuth(env: CloudflareEnv, config: AuthConfig = resolveAuthC
 }
 
 export type Auth = ReturnType<typeof createAuth>;
+
+/**
+ * Logs what Google returned against the email policy, naming the person by a
+ * pseudonym. This is the line that tells a refused account from a callback
+ * that failed after the policy passed.
+ */
+async function noteOAuthUser(env: CloudflareEnv, diag: Diagnostics, user: unknown, allowed: boolean) {
+  const { email, emailVerified } = (user ?? {}) as { email?: unknown; emailVerified?: unknown };
+  const address = typeof email === 'string' ? email : '';
+  diag.who = address ? await pseudonym(env.BETTER_AUTH_SECRET, address) : undefined;
+  diagLog(allowed ? 'info' : 'warn', 'gw.oauth_user', {
+    ray: diag.ray,
+    who: diag.who,
+    domain: address.split('@')[1]?.toLowerCase(),
+    emailVerified: emailVerified === true,
+    allowed,
+  });
+}

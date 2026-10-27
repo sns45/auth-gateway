@@ -1,6 +1,7 @@
 import { Next } from 'hono';
 import { RequestMetrics } from '@/types/api';
 import { AppContext } from '@/types/context';
+import { redact, redactText } from '@/observability/redact';
 
 /**
  * Logging levels
@@ -44,8 +45,10 @@ export class Logger {
       timestamp,
       level: levelName,
       requestId: this.requestId,
-      message,
-      ...(data && { data }),
+      // Persisted by Workers Logs: scrubbed like every other gateway line, so
+      // the audit and failure lines here cannot carry client IPs or tokens.
+      message: redactText(message),
+      ...(data && { data: redact(data) }),
     };
 
     console.log(JSON.stringify(logEntry));

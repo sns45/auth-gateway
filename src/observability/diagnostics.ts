@@ -26,6 +26,17 @@ import { describeError, redact, redactText } from '@/observability/redact';
 export const SLOW_STATEMENT_MS = 1000;
 const SLOW_REQUEST_MS = 3000;
 
+/**
+ * Failures Cloudflare documents as transient for D1 (issue 18): the database
+ * object was reset or the connection to it dropped, and the statement did not
+ * run to completion. Quota, constraint and syntax errors never match, so they
+ * fail at once. Retrying a write is safe because Better Auth supplies primary
+ * keys: one that did commit fails the retry on its duplicate key instead.
+ */
+const TRANSIENT_D1 = /object to be reset|reset because its code was updated|network connection lost|transient issue on remote node/i;
+const D1_ATTEMPTS = 3;
+const D1_RETRY_MS = [50, 200];
+
 export interface Diagnostics {
   ray: string;
   d1: { statements: number; ms: number; failures: number };
@@ -63,7 +74,15 @@ export function instrumentD1(db: D1Database, diag: Diagnostics): D1Database {
   const time = async <T>(sql: string, run: () => Promise<T>): Promise<T> => {
     const started = Date.now();
     try {
-      return await run();
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await run();
+        } catch (error) {
+          if (attempt >= D1_ATTEMPTS || !TRANSIENT_D1.test(error instanceof Error ? error.message : String(error))) throw error;
+          diagLog('warn', 'gw.d1_retry', { ray: diag.ray, ...describeStatement(sql), attempt, error: describeError(error) });
+          await new Promise(resolve => setTimeout(resolve, D1_RETRY_MS[attempt - 1]));
+        }
+      }
     } catch (error) {
       diag.d1.failures++;
       diagLog('error', 'gw.d1_error', { ray: diag.ray, ...describeStatement(sql), ms: Date.now() - started, error: describeError(error) });
